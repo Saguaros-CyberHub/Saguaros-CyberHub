@@ -1,0 +1,84 @@
+---
+- name: Create ideal Linux Proxmox template for Rocky Linux 9
+  hosts: all
+  become: true
+  tasks:
+
+    # Install updates
+    - name: Install updates on Rocky Linux
+      dnf:
+        name: '*'
+        state: latest
+        update_cache: true
+      tags: always
+
+    # Install required packages
+    - name: Install QEMU Guest Agent, Cloud-Init, DNF Automatic, and epel-release
+      dnf:
+        name:
+          - qemu-guest-agent
+          - cloud-init
+          - dnf-automatic
+          - epel-release
+        state: present
+        update_cache: yes
+      tags: always
+
+    - name: Enable and start QEMU Guest Agent
+      systemd:
+        name: qemu-guest-agent
+        enabled: yes
+        state: stopped
+      tags: always
+
+    # Configure Firewalld to allow SSH only from trusted subnet
+    - name: Create a new Firewalld zone for SSH
+      command: firewall-cmd --permanent --new-zone=ssh-limited
+      ignore_errors: yes
+
+    - name: Allow SSH from VPN subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=10.0.254.0/24
+
+    - name: Allow SSH from default subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.0.0/24
+
+    - name: Allow SSH from management subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.10.0/24
+
+    - name: Allow SSH from internal subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.20.0/24
+
+    - name: Allow SSH from trusted subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.30.0/24
+
+    - name: Allow SSH service in new zone
+      command: firewall-cmd --permanent --zone=ssh-limited --add-service=ssh
+
+    - name: Remove SSH service from default zone
+      command: firewall-cmd --permanent --remove-service=ssh
+
+    - name: Reload Firewalld
+      command: firewall-cmd --reload
+
+    # System cleanup
+    - name: Remove SSH authorized_keys file
+      ansible.builtin.file:
+        path: "{{ ansible_user_dir }}/.ssh/authorized_keys"
+        state: absent
+      tags: cleanup
+
+    - name: Clear machine-id
+      copy:
+        content: ""
+        dest: /etc/machine-id
+        owner: root
+        group: root
+        mode: '0644'
+      tags: cleanup
+
+    # Shutdown system
+    - name: Shutdown the system
+      command: poweroff
+      async: 1
+      poll: 0
+      tags: cleanup

@@ -1,0 +1,571 @@
+---
+- name: Build CIS-L1-ready Rocky 9 Proxmox template
+  hosts: all
+  become: true
+  vars:
+    sshd_cfg: /etc/ssh/sshd_config
+    disable_ssh_password: true   # change to false if you must allow password logins
+    banner_text: |
+      *****************************************************************************
+      *                            AUTHORIZED ACCESS ONLY                         *
+      *  This system is for the use of authorized users only. Individuals using   *
+      *  this computer system without authority, or in excess of their authority, *
+      *  are subject to having all of their activities on this system monitored   *
+      *  and recorded by system personnel.                                        *
+      *  In the course of monitoring individuals improperly using this system,    *
+      *  or in the course of system maintenance, the activities of authorized     *
+      *  users may also be monitored.                                             *
+      *  Anyone using this system expressly consents to such monitoring and is    *
+      *  advised that if such monitoring reveals possible evidence of criminal    *
+      *  activity, system personnel may provide the evidence to law enforcement   *
+      *  officials.                                                               *
+      *****************************************************************************
+
+  pre_tasks:
+    - name: Verify ansible.posix collection is available
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/ansible/posix"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: posix_collection_check
+
+    - name: Fail if ansible.posix collection is missing
+      ansible.builtin.fail:
+        msg: "ansible.posix collection is required. Install with: ansible-galaxy collection install ansible.posix --force"
+      when: not posix_collection_check.stat.exists
+      run_once: true
+
+  tasks:
+    # -------------------- Base packages & services --------------------
+    - name: Ensure latest packages
+      ansible.builtin.dnf:
+        name: '*'
+        state: latest
+        update_cache: true
+
+    - name: Install base packages (guest agent, cloud-init, growpart, EPEL, dnf-automatic) & CIS baseline services
+      ansible.builtin.dnf:
+        name:
+          - qemu-guest-agent
+          - cloud-init
+          - cloud-utils-growpart
+          - epel-release
+          - dnf-automatic
+          - audit
+          - audit-libs
+          - chrony
+          - rsyslog
+          - libpwquality
+        state: present
+
+    - name: Enable and start baseline services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - qemu-guest-agent
+        - auditd
+        - chronyd
+        - rsyslog
+
+    - name: Configure dnf-automatic for security-only updates
+      ansible.builtin.lineinfile:
+        path: /etc/dnf/automatic.conf
+        regexp: '^upgrade_type'
+        line: 'upgrade_type = security'
+        create: no
+      notify: restart dnf-automatic
+
+    - name: Enable dnf-automatic timer (Rocky 9)
+      ansible.builtin.systemd:
+        name: dnf-automatic.timer
+        enabled: true
+        state: started
+
+    # -------------------- SSH hardening (CIS-friendly) --------------------
+
+    - name: Ensure SSH root login disabled
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_cfg }}"
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+      notify: reload sshd
+
+    - name: Set additional SSH hardening defaults
+      ansible.builtin.blockinfile:
+        path: "{{ sshd_cfg }}"
+        marker: "# {mark} ANSIBLE-CIS-SSH"
+        block: |
+          X11Forwarding no
+          MaxAuthTries 4
+          LoginGraceTime 60
+          ClientAliveInterval 300
+          ClientAliveCountMax 2
+          UsePAM yes
+          UseDNS no
+      notify: reload sshd
+
+    - name: Disable SSH password authentication (optional)
+      when: disable_ssh_password | bool
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_cfg }}"
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: reload sshd
+
+    # -------------------- Configure Firewalld to allow SSH --------------------
+
+    - name: Check if ssh-limited zone exists
+      ansible.builtin.command: firewall-cmd --permanent --get-zones
+      register: firewall_zones
+      changed_when: false
+
+    - name: Create a new Firewalld zone for SSH
+      ansible.builtin.command: firewall-cmd --permanent --new-zone=ssh-limited
+      when: "'ssh-limited' not in firewall_zones.stdout"
+      register: zone_created
+
+    - name: Reload firewalld after zone creation
+      ansible.builtin.systemd:
+        name: firewalld
+        state: reloaded
+      when: zone_created is changed
+
+    - name: Allow SSH from default subnet # Remove later
+      ansible.posix.firewalld:
+        zone: ssh-limited
+        source: 100.100.0.0/24
+        state: enabled
+        permanent: true
+        immediate: true
+
+    - name: Allow SSH from management subnet
+      ansible.posix.firewalld:
+        zone: ssh-limited
+        source: 100.100.10.0/24
+        state: enabled
+        permanent: true
+        immediate: true
+
+    - name: Allow SSH from VPN subnet
+      ansible.posix.firewalld:
+        zone: ssh-limited
+        source: 10.0.254.0/24
+        state: enabled
+        permanent: true
+        immediate: true
+
+    # - name: Allow SSH from internal services subnet
+    #   ansible.posix.firewalld:
+    #     zone: ssh-limited
+    #     source: 100.100.20.0/24
+    #     state: enabled
+    #     permanent: true
+    #     immediate: true
+
+    # - name: Allow SSH from trusted subnet
+    #   ansible.posix.firewalld:
+    #     zone: ssh-limited
+    #     source: 100.100.30.0/24
+    #     state: enabled
+    #     permanent: true
+    #     immediate: true
+
+    - name: Allow SSH service in new zone
+      ansible.posix.firewalld:
+        zone: ssh-limited
+        service: ssh
+        state: enabled
+        permanent: true
+        immediate: true
+
+    - name: Remove SSH service from default zone
+      ansible.posix.firewalld:
+        zone: public
+        service: ssh
+        state: disabled
+        permanent: true
+        immediate: true
+
+    # -------------------- SELinux --------------------
+
+    - name: Ensure SELinux Enforcing at boot
+      ansible.builtin.replace:
+        path: /etc/selinux/config
+        regexp: '^SELINUX=.*'
+        replace: 'SELINUX=enforcing'
+
+    - name: Set SELinux Enforcing now (ignore if already enforcing)
+      ansible.builtin.command: setenforce 1
+      ignore_errors: true
+
+    # -------------------- Warning Banners (CIS) --------------------
+
+    - name: Create warning banner for /etc/issue
+      ansible.builtin.copy:
+        dest: /etc/issue
+        owner: root
+        group: root
+        mode: '0644'
+        content: "{{ banner_text }}\n"
+
+    - name: Create warning banner for /etc/issue.net
+      ansible.builtin.copy:
+        dest: /etc/issue.net
+        owner: root
+        group: root
+        mode: '0644'
+        content: "{{ banner_text }}\n"
+
+    - name: Configure SSH to display banner
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_cfg }}"
+        regexp: '^#?Banner'
+        line: 'Banner /etc/issue.net'
+        state: present
+      notify: reload sshd
+
+    - name: Create informational MOTD
+      ansible.builtin.copy:
+        dest: /etc/motd
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          
+          ================================================================================
+          
+                         Welcome to CIS Level 1 Hardened Rocky Linux 9
+          
+          ================================================================================
+          
+          This system is managed by Ansible and monitored by Wazuh.
+          All activity is logged and audited.
+          
+          System Characteristics:
+          - CIS Level 1 Server Benchmark compliance
+          - SELinux: Enforcing
+          - Firewall: Active (SSH limited access)
+          - Automatic security updates: Enabled
+          - Audit logging: Active
+          
+          For support or questions, contact your system administrator.
+          
+          ================================================================================
+          
+
+    # -------------------- Kernel hardening (CIS sysctl parameters) --------------------
+
+    - name: Apply CIS kernel hardening parameters
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+        sysctl_file: /etc/sysctl.d/99-cis-hardening.conf
+      loop:
+        # Network security
+        - { key: 'net.ipv4.ip_forward', value: '0' }
+        - { key: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { key: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+        - { key: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.all.secure_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.secure_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.all.log_martians', value: '1' }
+        - { key: 'net.ipv4.conf.default.log_martians', value: '1' }
+        - { key: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { key: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+        - { key: 'net.ipv4.conf.all.rp_filter', value: '1' }
+        - { key: 'net.ipv4.conf.default.rp_filter', value: '1' }
+        - { key: 'net.ipv4.tcp_syncookies', value: '1' }
+        # IPv6 - Fully disabled
+        - { key: 'net.ipv6.conf.all.disable_ipv6', value: '1' }
+        - { key: 'net.ipv6.conf.default.disable_ipv6', value: '1' }
+        - { key: 'net.ipv6.conf.lo.disable_ipv6', value: '1' }
+        - { key: 'net.ipv6.conf.all.accept_ra', value: '0' }
+        - { key: 'net.ipv6.conf.default.accept_ra', value: '0' }
+        - { key: 'net.ipv6.conf.all.accept_redirects', value: '0' }
+        - { key: 'net.ipv6.conf.default.accept_redirects', value: '0' }
+        # Kernel security
+        - { key: 'kernel.randomize_va_space', value: '2' }
+        - { key: 'fs.suid_dumpable', value: '0' }
+
+    # -------------------- Disable IPv6 and uncommon network protocols (CIS) --------------------
+
+    - name: Disable IPv6 via GRUB
+      ansible.builtin.lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_CMDLINE_LINUX='
+        line: 'GRUB_CMDLINE_LINUX="ipv6.disable=1"'
+        backrefs: yes
+        state: present
+      register: grub_updated
+
+    - name: Regenerate GRUB configuration
+      ansible.builtin.command: grub2-mkconfig -o /boot/grub2/grub.cfg
+      when: grub_updated is changed
+
+    - name: Disable uncommon network protocols
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/cis-network-protocols.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          install sctp /bin/true
+          install dccp /bin/true
+          install rds /bin/true
+          install tipc /bin/true
+          install ipv6 /bin/true
+
+    # -------------------- Disable unused filesystem types (CIS) --------------------
+
+    - name: Disable unused filesystem types
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/cis-filesystems.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          install cramfs /bin/true
+          install freevxfs /bin/true
+          install jffs2 /bin/true
+          install hfs /bin/true
+          install hfsplus /bin/true
+          install udf /bin/true
+
+    # -------------------- Basic audit rules (CIS baseline for Wazuh) --------------------
+
+    - name: Ensure audit rules directory exists
+      ansible.builtin.file:
+        path: /etc/audit/rules.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
+    - name: Deploy basic CIS audit rules
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/cis-baseline.rules
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          # CIS Baseline Audit Rules
+          -w /etc/passwd -p wa -k identity
+          -w /etc/group -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/gshadow -p wa -k identity
+          -w /etc/security/opasswd -p wa -k identity
+          -w /var/log/lastlog -p wa -k logins
+          -w /var/run/faillock -p wa -k logins
+          -a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+          -a always,exit -F arch=b32 -S adjtimex,settimeofday,stime -k time-change
+          -w /etc/localtime -p wa -k time-change
+          -w /etc/sudoers -p wa -k scope
+          -w /etc/sudoers.d/ -p wa -k scope
+          -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
+          -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
+      register: audit_rules_deployed
+
+    - name: Load audit rules immediately
+      ansible.builtin.command: augenrules --load
+      when: audit_rules_deployed is changed
+      changed_when: true
+
+    # -------------------- PAM password policies (CIS) --------------------
+
+    - name: Configure password quality requirements
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        create: yes
+      loop:
+        - { regexp: '^#?\s*minlen', line: 'minlen = 14' }
+        - { regexp: '^#?\s*dcredit', line: 'dcredit = -1' }
+        - { regexp: '^#?\s*ucredit', line: 'ucredit = -1' }
+        - { regexp: '^#?\s*ocredit', line: 'ocredit = -1' }
+        - { regexp: '^#?\s*lcredit', line: 'lcredit = -1' }
+
+    - name: Configure account lockout policy
+      ansible.builtin.lineinfile:
+        path: /etc/security/faillock.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        create: yes
+      loop:
+        - { regexp: '^#?\s*deny', line: 'deny = 5' }
+        - { regexp: '^#?\s*unlock_time', line: 'unlock_time = 900' }
+        - { regexp: '^#?\s*fail_interval', line: 'fail_interval = 900' }
+
+    - name: Enable faillock in authselect profile
+      ansible.builtin.command: >
+        authselect select sssd 
+        --force 
+        with-faillock 
+        without-nullok
+      register: authselect_result
+      changed_when: "'Profile' in authselect_result.stdout or 'selected' in authselect_result.stdout"
+      failed_when: authselect_result.rc != 0 and 'already selected' not in authselect_result.stderr
+
+    - name: Apply authselect changes
+      ansible.builtin.command: authselect apply-changes
+      when: authselect_result is changed
+      ignore_errors: yes
+
+    # -------------------- CIS fstab options for your partition map --------------------
+
+    - name: Define CIS mount options for existing separate partitions
+      ansible.builtin.set_fact:
+        cis_mounts:
+          - { path: '/home',            fstype: 'xfs', opts: 'defaults,nodev' }
+          - { path: '/var',             fstype: 'xfs', opts: 'defaults,nodev' }
+          - { path: '/var/log',         fstype: 'xfs', opts: 'defaults,nodev,nosuid,noexec' }
+          - { path: '/var/log/audit',   fstype: 'xfs', opts: 'defaults,nodev,nosuid,noexec' }
+          - { path: '/tmp',             fstype: 'xfs', opts: 'defaults,nodev,nosuid,noexec' }
+          - { path: '/var/tmp',         fstype: 'xfs', opts: 'defaults,nodev,nosuid,noexec' }
+
+    - name: Check which partitions exist
+      ansible.builtin.shell: "mountpoint -q {{ item.path }} && echo 'exists' || echo 'missing'"
+      register: partition_check
+      loop: "{{ cis_mounts }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure CIS mount options in fstab (modify existing, no duplicates)
+      ansible.posix.mount:
+        path: "{{ item.item.path }}"
+        src: "{{ ansible_mounts | selectattr('mount', 'equalto', item.item.path) | map(attribute='device') | first }}"
+        fstype: "{{ item.item.fstype }}"
+        opts: "{{ item.item.opts }}"
+        state: present
+      loop: "{{ partition_check.results }}"
+      when: "'exists' in item.stdout"
+      loop_control:
+        label: "{{ item.item.path }}"
+
+    - name: Remount CIS partitions with new options
+      ansible.builtin.shell: "mount -o remount {{ item.path }}"
+      args: { executable: /bin/bash }
+      loop: "{{ cis_mounts }}"
+      ignore_errors: true
+
+    - name: Ensure /dev/shm is mounted securely (tmpfs with nodev,nosuid,noexec)
+      ansible.posix.mount:
+        path: /dev/shm
+        src: tmpfs
+        fstype: tmpfs
+        opts: rw,nosuid,nodev,noexec,relatime,seclabel
+        state: mounted
+
+    # -------------------- Cloud-init: Proxmox-friendly + LVM auto-grow --------------------
+
+    - name: Set cloud-init datasource list for Proxmox
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/90-datasource.cfg
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          datasource_list: [ NoCloud, ConfigDrive ]
+
+    - name: Enable cloud-init services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - cloud-init-local
+        - cloud-init
+        - cloud-config
+        - cloud-final
+
+    - name: Ensure cloud-init will grow partition/LVM root on first boot
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-growvols.cfg
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Grow disk and LVM root automatically on first boot
+          growpart:
+            mode: auto
+            devices: ['/']
+            ignore_growroot_disabled: false
+          growvols:
+            mode: auto
+          resize_rootfs: true
+
+    # -------------------- Template hygiene --------------------
+
+    - name: Remove host SSH keys (regenerated on clone)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ lookup('ansible.builtin.fileglob', '/etc/ssh/ssh_host_*', wantlist=True) }}"
+
+    - name: Remove authorized_keys for all local users
+      ansible.builtin.shell: |
+        find /home -maxdepth 2 -type f -path '*/.ssh/authorized_keys' -delete || true
+        rm -f /root/.ssh/authorized_keys || true
+      args: { executable: /bin/bash }
+
+    - name: Ensure dbus directory exists for machine-id symlink
+      ansible.builtin.file:
+        path: /var/lib/dbus
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Truncate and relink machine-id for templating
+      ansible.builtin.shell: |
+        set -e
+        : > /etc/machine-id
+        rm -f /var/lib/dbus/machine-id || true
+        ln -sf /etc/machine-id /var/lib/dbus/machine-id
+      args: { executable: /bin/bash }
+
+    - name: Clean cloud-init state/logs for templating
+      ansible.builtin.command: cloud-init clean --logs
+
+    - name: Vacuum journal to 16M and rotate logs
+      ansible.builtin.shell: |
+        journalctl --vacuum-size=16M || true
+        /usr/sbin/logrotate -f /etc/logrotate.conf || true
+      args: { executable: /bin/bash }
+
+    - name: Clean package caches
+      ansible.builtin.shell: |
+        dnf clean all || true
+        rm -rf /var/cache/dnf/*
+      args: { executable: /bin/bash }
+
+    # -------------------- Finalize --------------------
+
+    - name: Power off the system so you can Convert to Template in Proxmox
+      ansible.builtin.command: /usr/sbin/poweroff
+      async: 1
+      poll: 0
+
+  handlers:
+    - name: reload sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: reloaded
+
+    - name: restart dnf-automatic
+      ansible.builtin.systemd:
+        name: dnf-automatic.timer
+        state: restarted
+        enabled: true
+
+    - name: restart auditd
+      ansible.builtin.command: service auditd restart # auditd requires special restart handling
