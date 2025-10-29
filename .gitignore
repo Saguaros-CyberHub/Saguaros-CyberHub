@@ -35,3 +35,23 @@ vault/*.json
 
 # TLS private keys if used
 vault/config/*.key
+
+# Ansible Vault and Sensitive Files
+rocky-cis-vars-*.yml
+rocky-cis-test-vars.yml
+rocky-cis-vault.yml
+*.vault
+.vault_pass
+.vault_password
+
+# But keep the example/template
+!rocky-cis-vars.yml
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+*.tmp
+.*.swp

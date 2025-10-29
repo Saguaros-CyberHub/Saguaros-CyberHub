@@ -2,24 +2,10 @@
 - name: Build CIS-L1-ready Rocky 9 Proxmox template
   hosts: all
   become: true
+  vars_files:
+    - configs/rocky-cis-test-vars.yml  # Load cleartext passwords for testing
   vars:
     sshd_cfg: /etc/ssh/sshd_config
-    disable_ssh_password: true   # change to false if you must allow password logins
-    banner_text: |
-      *****************************************************************************
-      *                            AUTHORIZED ACCESS ONLY                         *
-      *  This system is for the use of authorized users only. Individuals using   *
-      *  this computer system without authority, or in excess of their authority, *
-      *  are subject to having all of their activities on this system monitored   *
-      *  and recorded by system personnel.                                        *
-      *  In the course of monitoring individuals improperly using this system,    *
-      *  or in the course of system maintenance, the activities of authorized     *
-      *  users may also be monitored.                                             *
-      *  Anyone using this system expressly consents to such monitoring and is    *
-      *  advised that if such monitoring reveals possible evidence of criminal    *
-      *  activity, system personnel may provide the evidence to law enforcement   *
-      *  officials.                                                               *
-      *****************************************************************************
 
   pre_tasks:
     - name: Verify ansible.posix collection is available
@@ -35,6 +21,50 @@
         msg: "ansible.posix collection is required. Install with: ansible-galaxy collection install ansible.posix --force"
       when: not posix_collection_check.stat.exists
       run_once: true
+
+    # Generate password hashes from cleartext for testing
+    - name: Generate GRUB2 password hash from cleartext
+      ansible.builtin.shell: |
+        echo -e "{{ grub_password_cleartext }}\n{{ grub_password_cleartext }}" | grub2-mkpasswd-pbkdf2 | awk '/grub.pbkdf2.sha512/ {print $NF}'
+      register: grub_hash_output
+      changed_when: false
+      when: grub_password_cleartext is defined and grub_password_cleartext | length > 0
+
+    - name: Set GRUB password hash variable
+      ansible.builtin.set_fact:
+        grub_password_hash: "{{ grub_hash_output.stdout }}"
+      when: not (grub_hash_output.skipped | default(false))
+
+    - name: Generate root password hash from cleartext
+      ansible.builtin.shell: |
+        python3 -c 'import crypt; print(crypt.crypt("{{ root_password_cleartext }}", crypt.mksalt(crypt.METHOD_SHA512)))'
+      register: root_hash_output
+      changed_when: false
+      when: root_password_cleartext is defined and root_password_cleartext | length > 0
+
+    - name: Set root password hash variable
+      ansible.builtin.set_fact:
+        root_password_hash: "{{ root_hash_output.stdout }}"
+      when: not (root_hash_output.skipped | default(false))
+
+# Task table of contents
+# ------------------------------------
+# 1. Base packages & services (includes disabling bluetooth, journal-remote)
+# 2. SSH hardening (CIS-friendly with user access limits)
+# 3. Configure Firewalld to allow SSH
+# 4. SELinux
+# 5. Warning Banners (CIS)
+# 6. Kernel hardening (CIS sysctl parameters)
+# 7. Disable IPv6 and uncommon network protocols (CIS)
+# 8. GRUB password and root password configuration
+# 9. Disable unused filesystem types (CIS)
+# 10. Basic audit rules (CIS baseline for Wazuh)
+# 11. PAM password policies (CIS) including pwhistory
+# 12. CIS fstab options for your partition map (with nosuid on /home and /var)
+# 13. Active Directory integration (optional)
+# 14. Cloud-init: Proxmox-friendly + LVM auto-grow
+# 15. Template hygiene
+# 16. Finalize
 
   tasks:
     # -------------------- Base packages & services --------------------
@@ -57,7 +87,35 @@
           - chrony
           - rsyslog
           - libpwquality
+          - grub2-tools
         state: present
+
+    - name: Install Active Directory integration packages
+      ansible.builtin.dnf:
+        name:
+          - realmd
+          - sssd
+          - sssd-tools
+          - adcli
+          - krb5-workstation
+        state: present
+      when: enable_ad_join | bool
+
+    - name: Disable Bluetooth service
+      ansible.builtin.systemd:
+        name: bluetooth
+        enabled: false
+        state: stopped
+        masked: true
+      ignore_errors: true
+
+    - name: Disable systemd-journal-remote socket
+      ansible.builtin.systemd:
+        name: systemd-journal-remote.socket
+        enabled: false
+        state: stopped
+        masked: true
+      ignore_errors: true
 
     - name: Enable and start baseline services
       ansible.builtin.systemd:
@@ -94,7 +152,12 @@
         state: present
       notify: reload sshd
 
-    - name: Set additional SSH hardening defaults
+    - name: Build SSH AllowUsers string from allowed subnets
+      ansible.builtin.set_fact:
+        ssh_allow_users_line: "AllowUsers root@* {{ ssh_allowed_subnets | map('regex_replace', '^(.+)$', '*@\\1') | join(' ') }}"
+      when: not (enable_ad_join | bool)
+
+    - name: Set additional SSH hardening defaults (non-AD)
       ansible.builtin.blockinfile:
         path: "{{ sshd_cfg }}"
         marker: "# {mark} ANSIBLE-CIS-SSH"
@@ -103,9 +166,51 @@
           MaxAuthTries 4
           LoginGraceTime 60
           ClientAliveInterval 300
-          ClientAliveCountMax 2
+          ClientAliveCountMax 3
           UsePAM yes
           UseDNS no
+          {{ ssh_allow_users_line }}
+      notify: reload sshd
+      when: not (enable_ad_join | bool)
+
+    - name: Set additional SSH hardening defaults (AD mode - no AllowUsers)
+      ansible.builtin.blockinfile:
+        path: "{{ sshd_cfg }}"
+        marker: "# {mark} ANSIBLE-CIS-SSH"
+        block: |
+          X11Forwarding no
+          MaxAuthTries 4
+          LoginGraceTime 60
+          ClientAliveInterval 300
+          ClientAliveCountMax 3
+          UsePAM yes
+          UseDNS no
+      notify: reload sshd
+      when: enable_ad_join | bool
+
+    - name: Create sshd_config.d directory
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Remove ClientAliveCountMax from main sshd_config
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_cfg }}"
+        regexp: '^\s*ClientAliveCountMax'
+        state: absent
+
+    - name: Set ClientAliveCountMax in sshd_config.d drop-in file (CIS expects 1)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config.d/00-complianceascode-hardening.conf
+        regexp: '^\s*ClientAliveCountMax'
+        line: 'ClientAliveCountMax 1'
+        create: yes
+        owner: root
+        group: root
+        mode: '0600'
       notify: reload sshd
 
     - name: Disable SSH password authentication (optional)
@@ -134,45 +239,16 @@
         state: reloaded
       when: zone_created is changed
 
-    - name: Allow SSH from default subnet # Remove later
+    - name: Allow SSH from configured subnets
       ansible.posix.firewalld:
         zone: ssh-limited
-        source: 100.100.0.0/24
+        source: "{{ item.subnet }}"
         state: enabled
         permanent: true
         immediate: true
-
-    - name: Allow SSH from management subnet
-      ansible.posix.firewalld:
-        zone: ssh-limited
-        source: 100.100.10.0/24
-        state: enabled
-        permanent: true
-        immediate: true
-
-    - name: Allow SSH from VPN subnet
-      ansible.posix.firewalld:
-        zone: ssh-limited
-        source: 10.0.254.0/24
-        state: enabled
-        permanent: true
-        immediate: true
-
-    # - name: Allow SSH from internal services subnet
-    #   ansible.posix.firewalld:
-    #     zone: ssh-limited
-    #     source: 100.100.20.0/24
-    #     state: enabled
-    #     permanent: true
-    #     immediate: true
-
-    # - name: Allow SSH from trusted subnet
-    #   ansible.posix.firewalld:
-    #     zone: ssh-limited
-    #     source: 100.100.30.0/24
-    #     state: enabled
-    #     permanent: true
-    #     immediate: true
+      loop: "{{ firewall_ssh_sources }}"
+      loop_control:
+        label: "{{ item.comment }}: {{ item.subnet }}"
 
     - name: Allow SSH service in new zone
       ansible.posix.firewalld:
@@ -311,6 +387,33 @@
       ansible.builtin.command: grub2-mkconfig -o /boot/grub2/grub.cfg
       when: grub_updated is changed
 
+    - name: Set GRUB2 password (CIS requirement)
+      ansible.builtin.blockinfile:
+        path: /etc/grub.d/40_custom
+        marker: "# {mark} ANSIBLE GRUB PASSWORD"
+        block: |
+          set superusers="root"
+          password_pbkdf2 root {{ grub_password_hash }}
+        create: yes
+      when: (grub_password_hash | default('')) | length > 0
+      register: grub_password_set
+
+    - name: Regenerate GRUB configuration after password set
+      ansible.builtin.command: grub2-mkconfig -o /boot/grub2/grub.cfg
+      when: grub_password_set is changed
+
+    - name: Ensure root account has a password set (CIS requirement for single-user mode)
+      ansible.builtin.user:
+        name: root
+        password: "{{ root_password_hash }}"
+      when: (root_password_hash | default('')) | length > 0
+
+    - name: Lock root account if no password hash provided
+      ansible.builtin.user:
+        name: root
+        password: "!"
+      when: (root_password_hash | default('')) | length == 0
+
     - name: Disable uncommon network protocols
       ansible.builtin.copy:
         dest: /etc/modprobe.d/cis-network-protocols.conf
@@ -405,28 +508,82 @@
         - { regexp: '^#?\s*unlock_time', line: 'unlock_time = 900' }
         - { regexp: '^#?\s*fail_interval', line: 'fail_interval = 900' }
 
-    - name: Enable faillock in authselect profile
+    - name: Enable authselect with faillock and pwhistory features
+      ansible.builtin.command: >
+        authselect select sssd
+        --force 
+        with-faillock 
+        with-pwhistory
+        without-nullok
+      register: authselect_result
+      changed_when: "'Profile' in authselect_result.stdout or 'selected' in authselect_result.stdout"
+      failed_when: authselect_result.rc != 0 and 'already selected' not in authselect_result.stderr
+      when: not (enable_ad_join | bool)
+
+    - name: Enable faillock without pwhistory for AD mode
       ansible.builtin.command: >
         authselect select sssd 
         --force 
         with-faillock 
         without-nullok
-      register: authselect_result
-      changed_when: "'Profile' in authselect_result.stdout or 'selected' in authselect_result.stdout"
-      failed_when: authselect_result.rc != 0 and 'already selected' not in authselect_result.stderr
+      register: authselect_ad_result
+      changed_when: "'Profile' in authselect_ad_result.stdout or 'selected' in authselect_ad_result.stdout"
+      failed_when: authselect_ad_result.rc != 0 and 'already selected' not in authselect_ad_result.stderr
+      when: enable_ad_join | bool
 
     - name: Apply authselect changes
       ansible.builtin.command: authselect apply-changes
-      when: authselect_result is changed
+      when: authselect_result is changed or authselect_ad_result is changed
       ignore_errors: yes
+
+    - name: Configure password history remember count in pwhistory.conf
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwhistory.conf
+        regexp: '^#?\s*remember'
+        line: 'remember = 24'
+        create: yes
+        owner: root
+        group: root
+        mode: '0644'
+      when: not (enable_ad_join | bool)
+
+    - name: Fix password last change date for system accounts
+      ansible.builtin.shell: |
+        # Fix any accounts with future password change dates
+        for user in $(awk -F: '$3 < 1000 {print $1}' /etc/passwd); do
+          chage -d $(date +%Y-%m-%d) $user 2>/dev/null || true
+        done
+      args:
+        executable: /bin/bash
+
+    - name: Set minimum password age in login.defs
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^PASS_MIN_DAYS'
+        line: 'PASS_MIN_DAYS   1'
+        state: present
+
+    - name: Set existing user passwords to maximum and minimum age (CIS requirement)
+      ansible.builtin.shell: |
+        # Set maximum and minimum password age for all accounts with passwords (not ! or *)
+        # This includes root and regular user accounts
+        awk -F: '(/^[^:]+:[^!*]/ && ($5 > 365 || $5 == "")) {print $1}' /etc/shadow | while read -r user; do
+          chage -M 365 "$user" 2>/dev/null || true
+        done
+        awk -F: '(/^[^:]+:[^!*]/ && ($4 < 1 || $4 == "")) {print $1}' /etc/shadow | while read -r user; do
+          chage -m 1 "$user" 2>/dev/null || true
+        done
+      args:
+        executable: /bin/bash
+      when: not (enable_ad_join | bool)
 
     # -------------------- CIS fstab options for your partition map --------------------
 
     - name: Define CIS mount options for existing separate partitions
       ansible.builtin.set_fact:
         cis_mounts:
-          - { path: '/home',            fstype: 'xfs', opts: 'defaults,nodev' }
-          - { path: '/var',             fstype: 'xfs', opts: 'defaults,nodev' }
+          - { path: '/home',            fstype: 'xfs', opts: 'defaults,nodev,nosuid' }
+          - { path: '/var',             fstype: 'xfs', opts: 'defaults,nodev,nosuid' }
           - { path: '/var/log',         fstype: 'xfs', opts: 'defaults,nodev,nosuid,noexec' }
           - { path: '/var/log/audit',   fstype: 'xfs', opts: 'defaults,nodev,nosuid,noexec' }
           - { path: '/tmp',             fstype: 'xfs', opts: 'defaults,nodev,nosuid,noexec' }
@@ -442,12 +599,14 @@
     - name: Ensure CIS mount options in fstab (modify existing, no duplicates)
       ansible.posix.mount:
         path: "{{ item.item.path }}"
-        src: "{{ ansible_mounts | selectattr('mount', 'equalto', item.item.path) | map(attribute='device') | first }}"
+        src: "{{ ansible_mounts | selectattr('mount', 'equalto', item.item.path) | map(attribute='device') | first | default('') }}"
         fstype: "{{ item.item.fstype }}"
         opts: "{{ item.item.opts }}"
         state: present
       loop: "{{ partition_check.results }}"
-      when: "'exists' in item.stdout"
+      when: 
+        - "'exists' in item.stdout"
+        - (ansible_mounts | selectattr('mount', 'equalto', item.item.path) | list | length) > 0
       loop_control:
         label: "{{ item.item.path }}"
 
@@ -464,6 +623,275 @@
         fstype: tmpfs
         opts: rw,nosuid,nodev,noexec,relatime,seclabel
         state: mounted
+
+    # -------------------- Active Directory integration (optional) --------------------
+    # NOTE: This section configures AD settings and performs a test join, then leaves
+    # the domain before templating. A first-boot service (firstboot-ad-join.service)
+    # will automatically join each cloned VM with a unique computer identity.
+
+    - name: Configure DNS for AD domain controllers via NetworkManager
+      ansible.builtin.lineinfile:
+        path: /etc/NetworkManager/conf.d/dns.conf
+        line: "{{ item }}"
+        create: yes
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - "[main]"
+        - "dns=none"
+      when: enable_ad_join | bool
+
+    - name: Set AD DNS servers in resolv.conf
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Generated by Ansible for AD integration
+          {% for dns_server in ad_dc_servers %}
+          nameserver {{ dns_server }}
+          {% endfor %}
+          search {{ ad_domain }}
+      when: enable_ad_join | bool
+
+    - name: Make resolv.conf immutable to prevent overwrites
+      ansible.builtin.file:
+        path: /etc/resolv.conf
+        attributes: +i
+      when: enable_ad_join | bool
+
+    - name: Configure Kerberos for AD realm
+      ansible.builtin.copy:
+        dest: /etc/krb5.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [logging]
+           default = FILE:/var/log/krb5libs.log
+           kdc = FILE:/var/log/krb5kdc.log
+           admin_server = FILE:/var/log/kadmind.log
+          
+          [libdefaults]
+           default_realm = {{ ad_realm }}
+           dns_lookup_realm = true
+           dns_lookup_kdc = true
+           ticket_lifetime = 24h
+           renew_lifetime = 7d
+           forwardable = true
+           rdns = false
+           default_ccache_name = KEYRING:persistent:%{uid}
+          
+          [realms]
+           {{ ad_realm }} = {
+          {% for dc in ad_dc_servers %}
+            kdc = {{ dc }}:88
+          {% endfor %}
+            admin_server = {{ ad_dc_servers[0] }}:749
+           }
+          
+          [domain_realm]
+           .{{ ad_domain }} = {{ ad_realm }}
+           {{ ad_domain }} = {{ ad_realm }}
+      when: enable_ad_join | bool
+
+    - name: Enable and start realmd service
+      ansible.builtin.systemd:
+        name: realmd
+        enabled: true
+        state: started
+      when: enable_ad_join | bool
+
+    - name: Discover AD domain
+      ansible.builtin.command: realm discover {{ ad_domain }}
+      register: realm_discover
+      changed_when: false
+      failed_when: realm_discover.rc != 0
+      when: enable_ad_join | bool
+
+    - name: Obtain Kerberos ticket for AD join
+      ansible.builtin.shell: |
+        printf '%s\n' '{{ ad_join_password }}' | kinit {{ ad_join_user }}@{{ ad_realm }}
+      args:
+        executable: /bin/bash
+      no_log: false
+      when: 
+        - enable_ad_join | bool
+        - ad_join_password is defined
+      register: kinit_result
+      changed_when: false
+
+    - name: Join AD domain using Kerberos credentials
+      ansible.builtin.command: >
+        realm join
+        {% if ad_computer_ou is defined and ad_computer_ou | length > 0 %}
+        --computer-ou={{ ad_computer_ou }},DC={{ ad_domain.split('.') | join(',DC=') }}
+        {% endif %}
+        {{ ad_domain }}
+      when: 
+        - enable_ad_join | bool
+        - kinit_result is succeeded
+      register: realm_join_result
+      failed_when: 
+        - realm_join_result.rc != 0
+        - "'Already joined' not in realm_join_result.stderr"
+        - "'Already joined' not in realm_join_result.stdout"
+
+    - name: Customize SSSD configuration (optional settings)
+      ansible.builtin.lineinfile:
+        path: /etc/sssd/sssd.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        insertafter: "{{ item.section }}"
+      loop:
+        - { regexp: '^use_fully_qualified_names', line: 'use_fully_qualified_names = True', section: '^\[domain/' }
+        - { regexp: '^default_shell', line: 'default_shell = {{ ad_default_shell }}', section: '^\[domain/' }
+        - { regexp: '^fallback_homedir', line: 'fallback_homedir = {{ ad_fallback_homedir }}', section: '^\[domain/' }
+      when: enable_ad_join | bool
+
+    - name: Restart SSSD to apply custom settings
+      ansible.builtin.systemd:
+        name: sssd
+        state: restarted
+      when: enable_ad_join | bool
+      failed_when: false
+
+    - name: Configure PAM to create home directories on first login
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        line: "session optional pam_mkhomedir.so skel=/etc/skel umask=0077"
+        insertafter: "^session.*pam_unix.so"
+      when: enable_ad_join | bool
+
+    - name: Configure SSH to allow AD users (update sshd_config)
+      ansible.builtin.blockinfile:
+        path: "{{ sshd_cfg }}"
+        marker: "# {mark} ANSIBLE-AD-SSH"
+        block: |
+          # Allow AD user authentication
+          AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys
+          AuthorizedKeysCommandUser nobody
+          {% if ad_allowed_groups | length > 0 %}
+          # Restrict SSH access to specific AD groups
+          AllowGroups {{ ad_allowed_groups | map('regex_replace', '^(.+)$', '\\1@' + ad_domain) | join(' ') }}
+          {% endif %}
+      when: enable_ad_join | bool
+      notify: reload sshd
+
+    - name: Configure sudo access for AD groups
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/ad-admins
+        owner: root
+        group: root
+        mode: '0440'
+        content: |
+          # Allow AD Domain Admins full sudo access
+          %domain\ admins@{{ ad_domain }} ALL=(ALL) ALL
+          
+          # Allow AD Linux Admins full sudo access
+          %linux\ admins@{{ ad_domain }} ALL=(ALL) ALL
+        validate: '/usr/sbin/visudo -cf %s'
+      when: enable_ad_join | bool
+
+    - name: Create AD join script for first boot
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/firstboot-ad-join.sh
+        owner: root
+        group: root
+        mode: '0750'
+        content: |
+          #!/bin/bash
+          # First boot AD domain join script
+          # This script runs once after template cloning to join the unique VM to AD
+          
+          set -e
+          
+          LOGFILE="/var/log/firstboot-ad-join.log"
+          JOINED_FLAG="/var/lib/firstboot-ad-joined"
+          
+          # Exit if already joined
+          if [ -f "$JOINED_FLAG" ]; then
+            echo "$(date): Already joined to AD domain, exiting" >> "$LOGFILE"
+            exit 0
+          fi
+          
+          echo "$(date): Starting first-boot AD domain join" >> "$LOGFILE"
+          
+          # Wait for network to be ready
+          for i in {1..30}; do
+            if ping -c 1 {{ ad_dc_servers[0] }} &>/dev/null; then
+              echo "$(date): Network is ready" >> "$LOGFILE"
+              break
+            fi
+            echo "$(date): Waiting for network... ($i/30)" >> "$LOGFILE"
+            sleep 2
+          done
+          
+          # Get hostname for logging
+          HOSTNAME=$(hostname)
+          echo "$(date): Hostname: $HOSTNAME" >> "$LOGFILE"
+          
+          # Ensure SSSD directories exist with correct permissions
+          echo "$(date): Creating SSSD directories" >> "$LOGFILE"
+          mkdir -p /var/lib/sss/db /var/lib/sss/mc /var/log/sssd
+          chmod 700 /var/lib/sss/db /var/lib/sss/mc
+          chmod 750 /var/log/sssd
+          chown -R sssd:sssd /var/lib/sss /var/log/sssd 2>/dev/null || true
+          
+          # Obtain Kerberos ticket
+          echo "$(date): Obtaining Kerberos ticket" >> "$LOGFILE"
+          printf '%s\n' '{{ ad_join_password }}' | kinit {{ ad_join_user }}@{{ ad_realm }} >> "$LOGFILE" 2>&1
+          
+          # Join the domain
+          echo "$(date): Joining domain {{ ad_domain }}" >> "$LOGFILE"
+          realm join {% if ad_computer_ou is defined and ad_computer_ou | length > 0 %}--computer-ou={{ ad_computer_ou }},DC={{ ad_domain.split('.') | join(',DC=') }} {% endif %}{{ ad_domain }} >> "$LOGFILE" 2>&1
+          
+          # Clean up Kerberos ticket
+          kdestroy -A || true
+          
+          # Mark as joined
+          echo "$(date): Successfully joined to domain" >> "$LOGFILE"
+          touch "$JOINED_FLAG"
+          
+          # Restart SSSD to pick up new configuration
+          echo "$(date): Restarting SSSD" >> "$LOGFILE"
+          systemctl restart sssd
+          
+          echo "$(date): First-boot AD join completed successfully" >> "$LOGFILE"
+      when: enable_ad_join | bool
+
+    - name: Create systemd service for first-boot AD join
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/firstboot-ad-join.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=First Boot AD Domain Join
+          After=network-online.target cloud-init.target
+          Wants=network-online.target
+          ConditionPathExists=!/var/lib/firstboot-ad-joined
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/firstboot-ad-join.sh
+          RemainAfterExit=yes
+          StandardOutput=journal
+          StandardError=journal
+          
+          [Install]
+          WantedBy=multi-user.target
+      when: enable_ad_join | bool
+
+    - name: Enable first-boot AD join service
+      ansible.builtin.systemd:
+        name: firstboot-ad-join.service
+        enabled: true
+        daemon_reload: true
+      when: enable_ad_join | bool
 
     # -------------------- Cloud-init: Proxmox-friendly + LVM auto-grow --------------------
 
@@ -505,6 +933,46 @@
 
     # -------------------- Template hygiene --------------------
 
+    - name: Flush handlers before AD cleanup
+      meta: flush_handlers
+
+    - name: Stop SSSD before leaving domain (prevent handler failure)
+      ansible.builtin.systemd:
+        name: sssd
+        state: stopped
+      when: enable_ad_join | bool
+      failed_when: false
+
+    - name: Leave AD domain before templating (if joined)
+      ansible.builtin.command: realm leave
+      when: enable_ad_join | bool
+      register: realm_leave_result
+      failed_when: false
+      changed_when: realm_leave_result.rc == 0
+
+    - name: Clean AD/Kerberos artifacts for templating (files only, preserve directories)
+      ansible.builtin.shell: |
+        # Remove specific AD join artifacts but keep directory structure
+        rm -f /etc/krb5.keytab || true
+        rm -rf /var/lib/sss/db/* || true
+        rm -rf /var/lib/sss/mc/* || true
+        rm -rf /var/log/sssd/* || true
+        # Ensure directories exist with correct permissions
+        mkdir -p /var/lib/sss/db /var/lib/sss/mc /var/log/sssd
+        chmod 700 /var/lib/sss/db /var/lib/sss/mc
+        chmod 750 /var/log/sssd
+        chown -R sssd:sssd /var/lib/sss /var/log/sssd || true
+      args: { executable: /bin/bash }
+      when: enable_ad_join | bool
+
+    - name: Remove Kerberos credential caches
+      ansible.builtin.shell: |
+        rm -rf /tmp/krb5cc_* /var/tmp/krb5cc_* || true
+        kdestroy -A || true
+      args: { executable: /bin/bash }
+      when: enable_ad_join | bool
+      failed_when: false
+
     - name: Remove host SSH keys (regenerated on clone)
       ansible.builtin.file:
         path: "{{ item }}"
@@ -533,9 +1001,6 @@
         ln -sf /etc/machine-id /var/lib/dbus/machine-id
       args: { executable: /bin/bash }
 
-    - name: Clean cloud-init state/logs for templating
-      ansible.builtin.command: cloud-init clean --logs
-
     - name: Vacuum journal to 16M and rotate logs
       ansible.builtin.shell: |
         journalctl --vacuum-size=16M || true
@@ -548,7 +1013,13 @@
         rm -rf /var/cache/dnf/*
       args: { executable: /bin/bash }
 
+    - name: Clean cloud-init state/logs for templating
+      ansible.builtin.command: cloud-init clean --logs
+
     # -------------------- Finalize --------------------
+
+    - name: Flush all handlers before poweroff
+      meta: flush_handlers
 
     - name: Power off the system so you can Convert to Template in Proxmox
       ansible.builtin.command: /usr/sbin/poweroff
