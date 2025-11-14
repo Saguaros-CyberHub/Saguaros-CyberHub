@@ -31,6 +31,22 @@
         state: stopped
       tags: always
 
+    # Configure dnf-automatic for security updates
+    - name: Configure dnf-automatic for security-only updates
+      ansible.builtin.lineinfile:
+        path: /etc/dnf/automatic.conf
+        regexp: '^upgrade_type'
+        line: 'upgrade_type = security'
+        create: no
+      tags: always
+
+    - name: Enable dnf-automatic timer
+      ansible.builtin.systemd:
+        name: dnf-automatic.timer
+        enabled: yes
+        state: started
+      tags: always
+
     # Configure Firewalld to allow SSH only from trusted subnet
     - name: Create a new Firewalld zone for SSH
       command: firewall-cmd --permanent --new-zone=ssh-limited

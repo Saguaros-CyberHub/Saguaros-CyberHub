@@ -1,0 +1,229 @@
+---
+- name: Create ideal Linux Proxmox template for Rocky Linux 9
+  hosts: all
+  become: true
+  tasks:
+
+    # Install updates
+    - name: Install updates on Rocky Linux
+      dnf:
+        name: '*'
+        state: latest
+        update_cache: true
+      tags: always
+
+    # Install required packages
+    - name: Install QEMU Guest Agent, Cloud-Init, DNF Automatic, and epel-release
+      dnf:
+        name:
+          - qemu-guest-agent
+          - cloud-init
+          - dnf-automatic
+          - epel-release
+        state: present
+        update_cache: yes
+      tags: always
+
+    - name: Enable and start QEMU Guest Agent
+      systemd:
+        name: qemu-guest-agent
+        enabled: yes
+        state: stopped
+      tags: always
+
+    # Configure dnf-automatic for security updates
+    - name: Configure dnf-automatic for security-only updates
+      ansible.builtin.lineinfile:
+        path: /etc/dnf/automatic.conf
+        regexp: '^upgrade_type'
+        line: 'upgrade_type = security'
+        create: no
+      tags: always
+
+    - name: Enable dnf-automatic timer
+      ansible.builtin.systemd:
+        name: dnf-automatic.timer
+        enabled: yes
+        state: started
+      tags: always
+
+    # Basic security hardening
+    - name: Ensure SELinux is in enforcing mode
+      ansible.builtin.lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: 'SELINUX=enforcing'
+      tags: security
+
+    - name: Set SELinux to enforcing now
+      ansible.builtin.command: setenforce 1
+      ignore_errors: yes
+      tags: security
+
+    - name: Disable unused services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped
+        masked: yes
+      loop:
+        - bluetooth
+      ignore_errors: yes
+      tags: security
+
+    - name: Configure basic SSH hardening
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin yes' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 4' }
+        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+        - { regexp: '^#?LoginGraceTime', line: 'LoginGraceTime 60' }
+      notify: reload sshd
+      tags: security
+
+    - name: Apply basic kernel hardening via sysctl
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+        sysctl_file: /etc/sysctl.d/99-security.conf
+      loop:
+        # Disable IP forwarding
+        - { key: 'net.ipv4.ip_forward', value: '0' }
+        # Disable ICMP redirects
+        - { key: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        # Ignore ICMP redirects
+        - { key: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        # Ignore source routing
+        - { key: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { key: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+        # Enable SYN cookies
+        - { key: 'net.ipv4.tcp_syncookies', value: '1' }
+        # Log martian packets
+        - { key: 'net.ipv4.conf.all.log_martians', value: '1' }
+        # Ignore ICMP pings
+        - { key: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        # Enable reverse path filtering
+        - { key: 'net.ipv4.conf.all.rp_filter', value: '1' }
+        - { key: 'net.ipv4.conf.default.rp_filter', value: '1' }
+      ignore_errors: yes
+      tags: security
+
+    - name: Set password quality requirements (moderate)
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        create: yes
+      loop:
+        - { regexp: '^#?\s*minlen', line: 'minlen = 12' }
+        - { regexp: '^#?\s*dcredit', line: 'dcredit = -1' }
+        - { regexp: '^#?\s*ucredit', line: 'ucredit = -1' }
+        - { regexp: '^#?\s*lcredit', line: 'lcredit = -1' }
+      tags: security
+
+    - name: Configure basic account lockout (5 attempts)
+      ansible.builtin.lineinfile:
+        path: /etc/security/faillock.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        create: yes
+      loop:
+        - { regexp: '^#?\s*deny', line: 'deny = 5' }
+        - { regexp: '^#?\s*unlock_time', line: 'unlock_time = 900' }
+      tags: security
+
+    - name: Create informational MOTD
+      ansible.builtin.copy:
+        dest: /etc/motd
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          
+          ================================================================================
+          
+                         Saguaros CyberHub - Rocky Linux 9 Server
+          
+          ================================================================================
+          
+          This system is managed by Ansible and includes basic security hardening.
+          All activity is logged.
+          
+          System Features:
+          - SELinux: Enforcing
+          - Firewall: Active (SSH limited access)
+          - Automatic security updates: Enabled
+          
+          For support, contact your system administrator.
+          
+          ================================================================================
+          
+      tags: security
+
+    # Configure Firewalld to allow SSH only from trusted subnet
+    - name: Create a new Firewalld zone for SSH
+      command: firewall-cmd --permanent --new-zone=ssh-limited
+      ignore_errors: yes
+
+    - name: Allow SSH from VPN subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=10.0.254.0/24
+
+    - name: Allow SSH from default subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.0.0/24
+
+    - name: Allow SSH from management subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.10.0/24
+
+    - name: Allow SSH from internal subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.20.0/24
+
+    - name: Allow SSH from trusted subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.30.0/24
+
+    - name: Allow SSH service in new zone
+      command: firewall-cmd --permanent --zone=ssh-limited --add-service=ssh
+
+    - name: Remove SSH service from default zone
+      command: firewall-cmd --permanent --remove-service=ssh
+
+    - name: Reload Firewalld
+      command: firewall-cmd --reload
+
+    # System cleanup
+    - name: Remove SSH authorized_keys file
+      ansible.builtin.file:
+        path: "{{ ansible_user_dir }}/.ssh/authorized_keys"
+        state: absent
+      tags: cleanup
+
+    - name: Clear machine-id
+      copy:
+        content: ""
+        dest: /etc/machine-id
+        owner: root
+        group: root
+        mode: '0644'
+      tags: cleanup
+
+    # Shutdown system
+    - name: Shutdown the system
+      command: poweroff
+      async: 1
+      poll: 0
+      tags: cleanup
+
+  handlers:
+    - name: reload sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: reloaded

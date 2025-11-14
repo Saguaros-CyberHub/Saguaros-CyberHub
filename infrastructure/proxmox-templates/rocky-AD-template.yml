@@ -1,0 +1,290 @@
+---
+- name: Create ideal Linux Proxmox template for Rocky Linux 9
+  hosts: all
+  become: true
+  tasks:
+
+    # Install updates
+    - name: Install updates on Rocky Linux
+      dnf:
+        name: '*'
+        state: latest
+        update_cache: true
+      tags: always
+
+    # Install required packages
+    - name: Install QEMU Guest Agent, Cloud-Init, DNF Automatic, and epel-release
+      dnf:
+        name:
+          - qemu-guest-agent
+          - cloud-init
+          - dnf-automatic
+          - epel-release
+        state: present
+        update_cache: yes
+      tags: always
+
+    # Enable but don't start QEMU Guest Agent (will start on first boot after cloning)
+    - name: Enable and start QEMU Guest Agent
+      systemd:
+        name: qemu-guest-agent
+        enabled: yes
+        state: stopped
+      tags: always
+
+    # Configure cloud-init domain-join helper (runs on first-boot of cloned VMs)
+    - name: Install packages required for Active Directory join
+      dnf:
+        name:
+          - realmd
+          - sssd
+          - oddjob
+          - oddjob-mkhomedir
+          - adcli
+          - samba-common-tools
+          - krb5-workstation
+        state: present
+        update_cache: yes
+      tags: cloud-init
+
+    - name: Ensure cloud-init per-instance scripts directory exists
+      file:
+        path: /var/lib/cloud/scripts/per-instance
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: cloud-init
+
+    - name: Create domain join helper script for cloud-init (runs on first boot)
+      copy:
+        dest: /var/lib/cloud/scripts/per-instance/join-domain.sh
+        owner: root
+        group: root
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Automatically joins VM to saguaroscyberhub.org domain on first boot.
+          # Expects credentials in /etc/saguaros/domain-join.env (provided via cloud-init user-data).
+
+          set -euo pipefail
+
+          # ============================================================================
+          # CONFIGURATION - Edit these defaults as needed
+          # ============================================================================
+          DOMAIN_DEFAULT="saguaroscyberhub.org"
+          CRED_FILE=/etc/saguaros/domain-join.env
+          LOG=/var/log/cloud-init-domain-join.log
+          # ============================================================================
+
+          # Redirect all output to log file
+          exec > >(tee -a "$LOG") 2>&1
+
+          echo "[join-domain] Start: $(date)"
+
+          # Source credentials file if it exists (should contain JOIN_USER, JOIN_PASSWORD, DOMAIN)
+          if [ -f "$CRED_FILE" ]; then
+            echo "[join-domain] Sourcing credentials from $CRED_FILE"
+            # shellcheck disable=SC1090
+            . "$CRED_FILE"
+          fi
+
+          # Set variables with defaults if not provided
+          JOIN_USER=${JOIN_USER:-}
+          JOIN_PASSWORD=${JOIN_PASSWORD:-}
+          DOMAIN=${DOMAIN:-${DOMAIN_VAR:-$DOMAIN_DEFAULT}}
+
+          # Skip domain join if credentials not provided
+          if [ -z "$JOIN_USER" ] || [ -z "$JOIN_PASSWORD" ]; then
+            echo "[join-domain] No JOIN_USER/JOIN_PASSWORD found; skipping domain join."
+            exit 0
+          fi
+
+          # Wait up to 2.5 minutes for DNS to resolve the domain
+          echo "[join-domain] Waiting for DNS for $DOMAIN"
+          for i in {1..30}; do
+            if getent hosts "$DOMAIN" >/dev/null 2>&1; then
+              echo "[join-domain] DNS resolution ok"
+              break
+            fi
+            echo "[join-domain] DNS not available yet (attempt $i); sleeping 5s"
+            sleep 5
+          done
+
+          # Discover the AD realm
+          echo "[join-domain] Discovering realm for $DOMAIN"
+          realm discover "$DOMAIN" || echo "[join-domain] realm discover failed (continuing)"
+
+          # Perform unattended domain join
+          echo "[join-domain] Joining domain $DOMAIN as $JOIN_USER"
+          if echo "$JOIN_PASSWORD" | realm join --user="$JOIN_USER" --unattended "$DOMAIN"; then
+            echo "[join-domain] Successfully joined domain $DOMAIN"
+            
+            # Remove credentials file after successful join for security
+            if [ -f "$CRED_FILE" ]; then
+              echo "[join-domain] Removing credentials file"
+              rm -f "$CRED_FILE"
+            fi
+          else
+            echo "[join-domain] realm join failed"
+            exit 1
+          fi
+
+          echo "[join-domain] Done: $(date)"
+      tags: cloud-init
+
+    - name: Create directory for optional domain-join credential file
+      file:
+        path: /etc/saguaros
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      tags: cloud-init
+
+    # Configure Firewalld to allow SSH only from trusted subnet
+    - name: Create a new Firewalld zone for SSH
+      command: firewall-cmd --permanent --new-zone=ssh-limited
+      register: zone_result
+      changed_when: "'success' in zone_result.stdout or zone_result.rc == 0"
+      failed_when: false
+
+    - name: Allow SSH from VPN subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=10.0.254.0/24
+      register: source_result
+      changed_when: "'success' in source_result.stdout or source_result.rc == 0"
+      failed_when: false
+
+    - name: Allow SSH from default subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.0.0/24
+      register: source_result
+      changed_when: "'success' in source_result.stdout or source_result.rc == 0"
+      failed_when: false
+
+    - name: Allow SSH from management subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.10.0/24
+      register: source_result
+      changed_when: "'success' in source_result.stdout or source_result.rc == 0"
+      failed_when: false
+
+    - name: Allow SSH from internal subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.20.0/24
+      register: source_result
+      changed_when: "'success' in source_result.stdout or source_result.rc == 0"
+      failed_when: false
+
+    - name: Allow SSH from trusted subnet
+      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.30.0/24
+      register: source_result
+      changed_when: "'success' in source_result.stdout or source_result.rc == 0"
+      failed_when: false
+
+    - name: Allow SSH service in new zone
+      command: firewall-cmd --permanent --zone=ssh-limited --add-service=ssh
+      register: service_result
+      changed_when: "'success' in service_result.stdout or service_result.rc == 0"
+      failed_when: false
+
+    # Allow common Active Directory ports (Kerberos, LDAP, DNS, kpasswd, GC) so the
+    # VM can perform domain discovery and join operations during first boot.
+    - name: Allow Kerberos (TCP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=88/tcp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow Kerberos (UDP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=88/udp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow LDAP (TCP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=389/tcp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow LDAP (UDP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=389/udp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow LDAPS (TCP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=636/tcp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow kpasswd (TCP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=464/tcp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow kpasswd (UDP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=464/udp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow DNS (TCP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=53/tcp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow DNS (UDP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=53/udp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Allow Global Catalog (TCP)
+      command: firewall-cmd --permanent --zone=ssh-limited --add-port=3268/tcp
+      register: port_result
+      changed_when: "'success' in port_result.stdout or port_result.rc == 0"
+      failed_when: false
+
+    - name: Remove SSH service from default zone
+      command: firewall-cmd --permanent --remove-service=ssh
+      register: remove_result
+      changed_when: "'success' in remove_result.stdout or remove_result.rc == 0"
+      failed_when: false
+
+    - name: Reload Firewalld
+      command: firewall-cmd --reload
+
+    # System cleanup
+    - name: Remove SSH authorized_keys file
+      ansible.builtin.file:
+        path: "{{ ansible_user_dir }}/.ssh/authorized_keys"
+        state: absent
+      tags: cleanup
+
+    - name: Clear machine-id
+      copy:
+        content: ""
+        dest: /etc/machine-id
+        owner: root
+        group: root
+        mode: '0644'
+      tags: cleanup
+
+    - name: Sync filesystem before shutdown
+      command: sync
+      tags: cleanup
+
+    # Shutdown system (wait briefly for pending operations)
+    - name: Shutdown the system
+      command: shutdown -h +1 "Template preparation complete, shutting down"
+      async: 90
+      poll: 0
+      tags: cleanup
+      
+    - name: Wait for shutdown to begin
+      wait_for_connection:
+        timeout: 70
+      ignore_errors: yes
+      tags: cleanup

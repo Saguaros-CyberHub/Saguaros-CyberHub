@@ -1,0 +1,240 @@
+---
+- name: Join Rocky Linux VM to Active Directory domain
+  hosts: all
+  become: true
+  vars:
+    domain: "saguaroscyberhub.org"
+    domain_join_user: ""  # Set via --extra-vars or in inventory
+    domain_join_password: ""  # Set via --extra-vars or in inventory
+    
+  tasks:
+    # -------------------- Install required packages --------------------
+    - name: Install packages required for Active Directory join
+      ansible.builtin.dnf:
+        name:
+          - realmd
+          - sssd
+          - oddjob
+          - oddjob-mkhomedir
+          - adcli
+          - samba-common-tools
+          - krb5-workstation
+        state: present
+        update_cache: yes
+
+    # -------------------- Verify credentials provided --------------------
+    - name: Verify domain join credentials are provided
+      ansible.builtin.fail:
+        msg: "Domain join credentials required. Use: --extra-vars 'domain_join_user=admin domain_join_password=secret'"
+      when: domain_join_user | length == 0 or domain_join_password | length == 0
+
+    # -------------------- Wait for network and DNS --------------------
+    - name: Wait for DNS resolution of domain
+      ansible.builtin.command: "getent hosts {{ domain }}"
+      register: dns_check
+      retries: 10
+      delay: 5
+      until: dns_check.rc == 0
+      changed_when: false
+
+    # -------------------- Discover and join domain --------------------
+    - name: Discover Active Directory realm
+      ansible.builtin.command: "realm discover {{ domain }}"
+      register: realm_discover
+      changed_when: false
+      failed_when: false
+
+    - name: Display realm discovery information
+      ansible.builtin.debug:
+        var: realm_discover.stdout_lines
+
+    - name: Check if already joined to domain
+      ansible.builtin.command: realm list
+      register: realm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Join the Active Directory domain
+      ansible.builtin.shell: |
+        echo "{{ domain_join_password }}" | realm join --user={{ domain_join_user }} {{ domain }}
+      args:
+        executable: /bin/bash
+      when: "domain not in realm_list.stdout"
+      register: realm_join_result
+      no_log: true  # Don't log the password
+
+    - name: Display join result
+      ansible.builtin.debug:
+        msg: "Successfully joined domain {{ domain }}"
+      when: realm_join_result is changed
+
+    # -------------------- Configure SSSD for domain users --------------------
+    - name: Configure SSSD to allow all domain users
+      ansible.builtin.lineinfile:
+        path: /etc/sssd/sssd.conf
+        regexp: '^use_fully_qualified_names'
+        line: 'use_fully_qualified_names = False'
+        state: present
+      notify: restart sssd
+
+    - name: Configure SSSD home directory template
+      ansible.builtin.lineinfile:
+        path: /etc/sssd/sssd.conf
+        regexp: '^fallback_homedir'
+        line: 'fallback_homedir = /home/%u'
+        insertafter: '^\[domain/'
+        state: present
+      notify: restart sssd
+
+    - name: Configure SSSD default shell
+      ansible.builtin.lineinfile:
+        path: /etc/sssd/sssd.conf
+        regexp: '^default_shell'
+        line: 'default_shell = /bin/bash'
+        insertafter: '^\[domain/'
+        state: present
+      notify: restart sssd
+
+    # -------------------- Configure automatic home directory creation --------------------
+    - name: Enable oddjobd service for automatic home directory creation
+      ansible.builtin.systemd:
+        name: oddjobd
+        enabled: yes
+        state: started
+
+    - name: Configure PAM to create home directories on login
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        line: 'session optional pam_oddjob_mkhomedir.so skel=/etc/skel umask=0077'
+        insertafter: 'session.*required.*pam_unix.so'
+        state: present
+
+    - name: Configure PAM password auth to create home directories
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/password-auth
+        line: 'session optional pam_oddjob_mkhomedir.so skel=/etc/skel umask=0077'
+        insertafter: 'session.*required.*pam_unix.so'
+        state: present
+
+    # -------------------- Configure sudo access for domain admins --------------------
+    - name: Allow Domain Admins group to use sudo
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers.d/domain-admins
+        line: '%domain\ admins ALL=(ALL) ALL'
+        create: yes
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    # -------------------- Configure firewall for AD --------------------
+    - name: Check if firewalld is running
+      ansible.builtin.systemd:
+        name: firewalld
+      register: firewalld_status
+      failed_when: false
+
+    - name: Allow Kerberos through firewall (TCP)
+      ansible.posix.firewalld:
+        port: 88/tcp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow Kerberos through firewall (UDP)
+      ansible.posix.firewalld:
+        port: 88/udp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow LDAP through firewall (TCP)
+      ansible.posix.firewalld:
+        port: 389/tcp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow LDAP through firewall (UDP)
+      ansible.posix.firewalld:
+        port: 389/udp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow LDAPS through firewall (TCP)
+      ansible.posix.firewalld:
+        port: 636/tcp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow kpasswd through firewall (TCP)
+      ansible.posix.firewalld:
+        port: 464/tcp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow kpasswd through firewall (UDP)
+      ansible.posix.firewalld:
+        port: 464/udp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow DNS through firewall (TCP)
+      ansible.posix.firewalld:
+        port: 53/tcp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow DNS through firewall (UDP)
+      ansible.posix.firewalld:
+        port: 53/udp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    - name: Allow Global Catalog through firewall (TCP)
+      ansible.posix.firewalld:
+        port: 3268/tcp
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: firewalld_status.status.ActiveState == "active"
+
+    # -------------------- Verify domain join --------------------
+    - name: Verify domain join status
+      ansible.builtin.command: realm list
+      register: final_realm_list
+      changed_when: false
+
+    - name: Display final domain status
+      ansible.builtin.debug:
+        msg: "{{ final_realm_list.stdout_lines }}"
+
+    - name: Test domain user lookup
+      ansible.builtin.command: "id {{ domain_join_user }}@{{ domain }}"
+      register: user_lookup
+      changed_when: false
+      failed_when: false
+
+    - name: Display domain user lookup result
+      ansible.builtin.debug:
+        var: user_lookup.stdout
+      when: user_lookup.rc == 0
+
+  handlers:
+    - name: restart sssd
+      ansible.builtin.systemd:
+        name: sssd
+        state: restarted
