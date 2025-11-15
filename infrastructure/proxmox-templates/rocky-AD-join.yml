@@ -6,6 +6,9 @@
     domain: "saguaroscyberhub.org"
     domain_join_user: ""  # Set via --extra-vars or in inventory
     domain_join_password: ""  # Set via --extra-vars or in inventory
+    ad_dns_servers:  # Your AD domain controllers
+      - 100.100.20.20
+      - 100.100.20.21
     
   tasks:
     # -------------------- Install required packages --------------------
@@ -27,6 +30,38 @@
       ansible.builtin.fail:
         msg: "Domain join credentials required. Use: --extra-vars 'domain_join_user=admin domain_join_password=secret'"
       when: domain_join_user | length == 0 or domain_join_password | length == 0
+
+    # -------------------- Configure DNS to use AD servers --------------------
+    - name: Create resolv.conf with AD DNS servers first
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          search {{ domain }}
+          nameserver {{ ad_dns_servers[0] }}
+          nameserver {{ ad_dns_servers[1] }}
+          nameserver 100.100.10.1
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Verify resolv.conf contents
+      ansible.builtin.shell: cat /etc/resolv.conf
+      register: resolv_check
+      changed_when: false
+
+    - name: Display resolv.conf
+      ansible.builtin.debug:
+        var: resolv_check.stdout_lines
+
+    - name: Verify AD DNS is working
+      ansible.builtin.shell: |
+        nslookup -type=SRV _ldap._tcp.{{ domain }}
+      register: srv_check
+      changed_when: false
+
+    - name: Display SRV record check
+      ansible.builtin.debug:
+        var: srv_check.stdout_lines
 
     # -------------------- Wait for network and DNS --------------------
     - name: Wait for DNS resolution of domain
@@ -55,13 +90,11 @@
       failed_when: false
 
     - name: Join the Active Directory domain
-      ansible.builtin.shell: |
-        echo "{{ domain_join_password }}" | realm join --user={{ domain_join_user }} {{ domain }}
-      args:
-        executable: /bin/bash
-      when: "domain not in realm_list.stdout"
-      register: realm_join_result
-      no_log: true  # Don't log the password
+      ansible.builtin.expect:
+        command: "realm join --user={{ domain_join_user }} {{ domain }}"
+        responses:
+          (?i)password: "{{ domain_join_password }}"
+      no_log: false
 
     - name: Display join result
       ansible.builtin.debug:
@@ -223,7 +256,7 @@
         msg: "{{ final_realm_list.stdout_lines }}"
 
     - name: Test domain user lookup
-      ansible.builtin.command: "id {{ domain_join_user }}@{{ domain }}"
+      ansible.builtin.command: "id {{ domain_join_user }}"
       register: user_lookup
       changed_when: false
       failed_when: false

@@ -16,6 +16,7 @@ tempCodeRunnerFile.sh
 *.backup
 cyberprobe/
 .cybercore-backup/
+template-inventory.ini
 
 # Added for install.sh
 /secrets/

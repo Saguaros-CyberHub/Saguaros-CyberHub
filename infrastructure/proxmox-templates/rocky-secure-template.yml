@@ -1,64 +1,111 @@
 ---
-- name: Create ideal Linux Proxmox template for Rocky Linux 9
+- name: Ideal Rocky Linux 9 Proxmox template
   hosts: all
   become: true
+
+  vars:
+    # SSH behavior
+    ssh_permit_root: false           # set true if you really want root over SSH on clones
+    sshd_config_path: /etc/ssh/sshd_config
+
+    # Firewalld / SSH access control
+    ssh_zone_name: ssh-limited
+    ssh_allowed_sources:
+      - 10.0.254.0/24      # VPN subnet
+      - 100.100.0.0/24     # default subnet
+      - 100.100.10.0/24    # management
+      - 100.100.20.0/24    # AD / infra
+      - 100.100.30.0/24    # internal
+
+    # SELinux
+    enable_selinux_enforcing: true
+
+  pre_tasks:
+    - name: Ensure ansible.posix collection is present (for firewalld/sysctl)
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/ansible/posix"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: posix_collection_check
+
+    - name: Warn if ansible.posix collection is missing
+      ansible.builtin.debug:
+        msg: >
+          ansible.posix collection not found on control node.
+          Install with: ansible-galaxy collection install ansible.posix
+      when: not posix_collection_check.stat.exists
+      run_once: true
+
   tasks:
 
-    # Install updates
-    - name: Install updates on Rocky Linux
-      dnf:
+    # -------------------- Base OS & packages --------------------
+
+    - name: Install all updates on Rocky Linux
+      ansible.builtin.dnf:
         name: '*'
         state: latest
         update_cache: true
-      tags: always
 
-    # Install required packages
-    - name: Install QEMU Guest Agent, Cloud-Init, DNF Automatic, and epel-release
-      dnf:
+    - name: Install base packages (guest agent, cloud-init, updates, time, firewall)
+      ansible.builtin.dnf:
         name:
           - qemu-guest-agent
           - cloud-init
+          - cloud-utils-growpart
           - dnf-automatic
           - epel-release
+          - chrony
+          - firewalld
         state: present
         update_cache: yes
-      tags: always
 
-    - name: Enable and start QEMU Guest Agent
-      systemd:
+    - name: Enable QEMU Guest Agent (will start on first boot after cloning)
+      ansible.builtin.systemd:
         name: qemu-guest-agent
         enabled: yes
         state: stopped
-      tags: always
 
-    # Configure dnf-automatic for security updates
+    - name: Enable and start chrony (NTP)
+      ansible.builtin.systemd:
+        name: chronyd
+        enabled: yes
+        state: started
+
+    - name: Enable and start firewalld
+      ansible.builtin.systemd:
+        name: firewalld
+        enabled: yes
+        state: started
+
+    # -------------------- dnf-automatic (security updates) --------------------
+
     - name: Configure dnf-automatic for security-only updates
       ansible.builtin.lineinfile:
         path: /etc/dnf/automatic.conf
         regexp: '^upgrade_type'
         line: 'upgrade_type = security'
         create: no
-      tags: always
 
     - name: Enable dnf-automatic timer
       ansible.builtin.systemd:
         name: dnf-automatic.timer
         enabled: yes
         state: started
-      tags: always
 
-    # Basic security hardening
-    - name: Ensure SELinux is in enforcing mode
+    # -------------------- SELinux --------------------
+
+    - name: Ensure SELinux in enforcing mode at boot (if enabled)
       ansible.builtin.lineinfile:
         path: /etc/selinux/config
         regexp: '^SELINUX='
-        line: 'SELINUX=enforcing'
-      tags: security
+        line: "SELINUX={{ 'enforcing' if enable_selinux_enforcing else 'permissive' }}"
 
-    - name: Set SELinux to enforcing now
-      ansible.builtin.command: setenforce 1
-      ignore_errors: yes
-      tags: security
+    - name: Set SELinux mode now (best effort)
+      ansible.builtin.command: "setenforce {{ '1' if enable_selinux_enforcing else '0' }}"
+      ignore_errors: true
+
+    # -------------------- Disable unused services --------------------
 
     - name: Disable unused services
       ansible.builtin.systemd:
@@ -69,25 +116,34 @@
       loop:
         - bluetooth
       ignore_errors: yes
-      tags: security
 
-    - name: Configure basic SSH hardening
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        state: present
-      loop:
-        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin yes' }
-        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
-        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 4' }
-        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
-        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
-        - { regexp: '^#?LoginGraceTime', line: 'LoginGraceTime 60' }
+    # -------------------- SSH hardening --------------------
+
+    - name: Ensure sshd_config exists
+      ansible.builtin.file:
+        path: "{{ sshd_config_path }}"
+        state: file
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Configure SSH baseline settings
+      ansible.builtin.blockinfile:
+        path: "{{ sshd_config_path }}"
+        marker: "# {mark} ANSIBLE-SSH-HARDENING"
+        block: |
+          PermitRootLogin {{ 'yes' if ssh_permit_root else 'no' }}
+          X11Forwarding no
+          MaxAuthTries 4
+          LoginGraceTime 60
+          ClientAliveInterval 300
+          ClientAliveCountMax 2
+          UseDNS no
       notify: reload sshd
-      tags: security
 
-    - name: Apply basic kernel hardening via sysctl
+    # -------------------- Basic kernel hardening (sysctl) --------------------
+
+    - name: Apply basic kernel/network sysctl hardening
       ansible.posix.sysctl:
         name: "{{ item.key }}"
         value: "{{ item.value }}"
@@ -95,30 +151,23 @@
         reload: yes
         sysctl_file: /etc/sysctl.d/99-security.conf
       loop:
-        # Disable IP forwarding
         - { key: 'net.ipv4.ip_forward', value: '0' }
-        # Disable ICMP redirects
         - { key: 'net.ipv4.conf.all.send_redirects', value: '0' }
         - { key: 'net.ipv4.conf.default.send_redirects', value: '0' }
-        # Ignore ICMP redirects
         - { key: 'net.ipv4.conf.all.accept_redirects', value: '0' }
         - { key: 'net.ipv4.conf.default.accept_redirects', value: '0' }
-        # Ignore source routing
         - { key: 'net.ipv4.conf.all.accept_source_route', value: '0' }
         - { key: 'net.ipv4.conf.default.accept_source_route', value: '0' }
-        # Enable SYN cookies
         - { key: 'net.ipv4.tcp_syncookies', value: '1' }
-        # Log martian packets
         - { key: 'net.ipv4.conf.all.log_martians', value: '1' }
-        # Ignore ICMP pings
         - { key: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
-        # Enable reverse path filtering
         - { key: 'net.ipv4.conf.all.rp_filter', value: '1' }
         - { key: 'net.ipv4.conf.default.rp_filter', value: '1' }
       ignore_errors: yes
-      tags: security
 
-    - name: Set password quality requirements (moderate)
+    # -------------------- Password policy & lockout --------------------
+
+    - name: Configure password quality requirements (moderate; AD policy will override for domain users)
       ansible.builtin.lineinfile:
         path: /etc/security/pwquality.conf
         regexp: "{{ item.regexp }}"
@@ -129,9 +178,8 @@
         - { regexp: '^#?\s*dcredit', line: 'dcredit = -1' }
         - { regexp: '^#?\s*ucredit', line: 'ucredit = -1' }
         - { regexp: '^#?\s*lcredit', line: 'lcredit = -1' }
-      tags: security
 
-    - name: Configure basic account lockout (5 attempts)
+    - name: Configure basic account lockout policy (5 attempts)
       ansible.builtin.lineinfile:
         path: /etc/security/faillock.conf
         regexp: "{{ item.regexp }}"
@@ -140,7 +188,8 @@
       loop:
         - { regexp: '^#?\s*deny', line: 'deny = 5' }
         - { regexp: '^#?\s*unlock_time', line: 'unlock_time = 900' }
-      tags: security
+
+    # -------------------- MOTD --------------------
 
     - name: Create informational MOTD
       ansible.builtin.copy:
@@ -152,75 +201,171 @@
           
           ================================================================================
           
-                         Saguaros CyberHub - Rocky Linux 9 Server
+                         Saguaros CyberHub - Rocky Linux 9 Server Template
           
           ================================================================================
           
-          This system is managed by Ansible and includes basic security hardening.
-          All activity is logged.
+          This system is managed by unpaid Cyber Saguaros administrators and includes
+          basic security hardening. All activity may be logged. Don't be a turd.
           
           System Features:
-          - SELinux: Enforcing
-          - Firewall: Active (SSH limited access)
+          - SELinux: {{ 'Enforcing' if enable_selinux_enforcing else 'Permissive' }}
+          - Firewall: Active (SSH limited to trusted networks)
           - Automatic security updates: Enabled
+          - QEMU guest agent: Enabled (for Proxmox)
           
           For support, contact your system administrator.
           
           ================================================================================
           
-      tags: security
 
-    # Configure Firewalld to allow SSH only from trusted subnet
-    - name: Create a new Firewalld zone for SSH
-      command: firewall-cmd --permanent --new-zone=ssh-limited
-      ignore_errors: yes
+    # -------------------- Firewalld configuration for SSH --------------------
 
-    - name: Allow SSH from VPN subnet
-      command: firewall-cmd --permanent --zone=ssh-limited --add-source=10.0.254.0/24
+    - name: Ensure custom SSH zone exists (best effort)
+      ansible.builtin.command: "firewall-cmd --permanent --new-zone={{ ssh_zone_name }}"
+      register: new_zone_cmd
+      changed_when: "'already exists' not in new_zone_cmd.stderr | default('')"
+      failed_when: false
 
-    - name: Allow SSH from default subnet
-      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.0.0/24
+    - name: Reload firewalld to activate new zone
+      ansible.builtin.systemd:
+        name: firewalld
+        state: reloaded
+      when: new_zone_cmd is changed
 
-    - name: Allow SSH from management subnet
-      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.10.0/24
+    - name: Allow SSH sources in {{ ssh_zone_name }} zone
+      ansible.posix.firewalld:
+        zone: "{{ ssh_zone_name }}"
+        source: "{{ item }}"
+        state: enabled
+        permanent: true
+        immediate: true
+      loop: "{{ ssh_allowed_sources }}"
 
-    - name: Allow SSH from internal subnet
-      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.20.0/24
+    - name: Allow SSH service in {{ ssh_zone_name }} zone
+      ansible.posix.firewalld:
+        zone: "{{ ssh_zone_name }}"
+        service: ssh
+        state: enabled
+        permanent: true
+        immediate: true
 
-    - name: Allow SSH from trusted subnet
-      command: firewall-cmd --permanent --zone=ssh-limited --add-source=100.100.30.0/24
+    - name: Remove SSH service from public zone (default)
+      ansible.posix.firewalld:
+        zone: public
+        service: ssh
+        state: disabled
+        permanent: true
+        immediate: true
 
-    - name: Allow SSH service in new zone
-      command: firewall-cmd --permanent --zone=ssh-limited --add-service=ssh
+    # Note: binding interfaces to the {{ ssh_zone_name }} zone is usually
+    # done via NetworkManager or host-level firewalld config, since it depends
+    # on which NIC the VM actually uses in Proxmox.
 
-    - name: Remove SSH service from default zone
-      command: firewall-cmd --permanent --remove-service=ssh
+    # -------------------- Cloud-init configuration --------------------
 
-    - name: Reload Firewalld
-      command: firewall-cmd --reload
-
-    # System cleanup
-    - name: Remove SSH authorized_keys file
-      ansible.builtin.file:
-        path: "{{ ansible_user_dir }}/.ssh/authorized_keys"
-        state: absent
-      tags: cleanup
-
-    - name: Clear machine-id
-      copy:
-        content: ""
-        dest: /etc/machine-id
+    - name: Configure cloud-init to grow root filesystem on first boot
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-growpart.cfg
         owner: root
         group: root
         mode: '0644'
-      tags: cleanup
+        content: |
+          # Automatically grow partition and filesystem on first boot
+          growpart:
+            mode: auto
+            devices: ['/']
+            ignore_growroot_disabled: false
+          resize_rootfs: true
 
-    # Shutdown system
-    - name: Shutdown the system
-      command: poweroff
-      async: 1
+    - name: Set cloud-init datasource list for Proxmox
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/90-datasource.cfg
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          datasource_list: [ NoCloud, ConfigDrive ]
+
+    - name: Enable cloud-init services (will run on first boot after cloning)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+      loop:
+        - cloud-init-local
+        - cloud-init
+        - cloud-config
+        - cloud-final
+
+    # -------------------- Template hygiene / cleanup --------------------
+
+    - name: Flush handlers before cleanup
+      meta: flush_handlers
+
+    - name: Remove authorized_keys for all local users
+      ansible.builtin.shell: |
+        find /home -maxdepth 2 -type f -path '*/.ssh/authorized_keys' -delete || true
+        rm -f /root/.ssh/authorized_keys || true
+      args:
+        executable: /bin/bash
+
+    - name: Remove SSH host keys (regenerated on first boot)
+      ansible.builtin.shell: rm -f /etc/ssh/ssh_host_*
+      args:
+        executable: /bin/bash
+
+    - name: Ensure dbus directory exists for machine-id symlink
+      ansible.builtin.file:
+        path: /var/lib/dbus
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Reset machine-id for templating
+      ansible.builtin.shell: |
+        set -e
+        : > /etc/machine-id
+        rm -f /var/lib/dbus/machine-id || true
+        ln -sf /etc/machine-id /var/lib/dbus/machine-id
+      args:
+        executable: /bin/bash
+
+    - name: Clean dnf cache
+      ansible.builtin.shell: |
+        dnf clean all || true
+        rm -rf /var/cache/dnf/*
+      args:
+        executable: /bin/bash
+
+    - name: Clean cloud-init state for templating
+      ansible.builtin.command: cloud-init clean --logs --seed
+      ignore_errors: yes
+
+    # -------------------- Finalize / poweroff --------------------
+
+    - name: Flush handlers before poweroff
+      meta: flush_handlers
+
+    - name: Final firewalld reload to ensure all SSH rules are active (prevents lockout)
+      ansible.builtin.systemd:
+        name: firewalld
+        state: reloaded
+
+    - name: Sync filesystem before shutdown
+      ansible.builtin.command: sync
+
+    - name: Power off the system so it can be turned into a Proxmox template
+      ansible.builtin.command: shutdown -h +1 "Template preparation complete, shutting down"
+      async: 90
       poll: 0
-      tags: cleanup
+      ignore_unreachable: yes
+
+    - name: Wait for system to begin shutdown
+      ansible.builtin.wait_for_connection:
+        timeout: 70
+      ignore_errors: yes
+      ignore_unreachable: yes
 
   handlers:
     - name: reload sshd
