@@ -1,7 +1,6 @@
 .DS_Store
 ansible/
 proxmox-automated-install/
-cyberlabs/
 **/data/*
 !**/data/.gitkeep
 __pycache__/
@@ -14,9 +13,8 @@ tempCodeRunnerFile.sh
 .claude/
 *.bkp
 *.backup
-cyberprobe/
 .cybercore-backup/
-template-inventory.ini
+./infrastructure/proxmox-templates/template-inventory.ini
 
 # Added for install.sh
 /secrets/

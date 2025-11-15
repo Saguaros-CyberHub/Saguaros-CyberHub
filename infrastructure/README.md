@@ -80,7 +80,9 @@ This is a general layout of the network.
 `x.x.x.20-29`: Authentication services (LDAP, FreeIPA, Keycloack, etc.) \
 `x.x.x.30-39`: Backup services \
 `x.x.x.40-49`: Network storage shares \
-`x.x.x.50-99`: Others \
+`x.x.x.50`: CyberCore \
+`x.x.x.51-99`: Others \
+
 `x.x.x.100-254`: DHCP
 
 #### 100.x.30.0/24: Trusted network & VPN access
