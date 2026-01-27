@@ -1,0 +1,211 @@
+---
+- name: Create ideal Linux Mint Proxmox base template (passthrough + vGPU ready)
+  hosts: all
+  become: true
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # Base updates
+    # -------------------------------------------------------------------------
+    - name: Install updates on Mint
+      apt:
+        upgrade: dist
+        update_cache: true
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Core Proxmox guest packages
+    # -------------------------------------------------------------------------
+    - name: Install QEMU Guest Agent, Cloud-Init, and Unattended Upgrades on Mint
+      apt:
+        name:
+          - qemu-guest-agent
+          - cloud-init
+          - unattended-upgrades
+        state: present
+        update_cache: yes
+      tags: always
+
+    - name: Enable and start QEMU Guest Agent
+      systemd:
+        name: qemu-guest-agent
+        enabled: yes
+        state: started
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Firewall (UFW)
+    # -------------------------------------------------------------------------
+    - name: Allow SSH from Trusted subnets
+      ansible.builtin.ufw:
+        rule: allow
+        proto: tcp
+        from_ip:
+          - 100.100.10.0/24 # Management VLAN
+          - 100.100.30.0/24 # Trusted VLAN
+          - 10.0.254.0/24 # Admin VPN range
+          - 10.1.0.0/16 # Student VPN range
+        port: "22"
+      tags: always
+
+    - name: Enable UFW firewall
+      ansible.builtin.ufw:
+        state: enabled
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Timezone
+    # -------------------------------------------------------------------------
+    - name: Check the current timezone
+      ansible.builtin.command: timedatectl
+      register: timezone_output
+      changed_when: false
+      tags: always
+
+    - name: Set timezone to America/Phoenix
+      ansible.builtin.command: timedatectl set-timezone America/Phoenix
+      when: "'America/Phoenix' not in timezone_output.stdout"
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # SSH hardening
+    # -------------------------------------------------------------------------
+    - name: Configure SSHD (no root login, no password auth)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+        create: yes
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 9' }
+      tags: always
+
+    - name: Ensure PasswordAuthentication is set to no (cloud-init ssh drop-in)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config.d/50-cloud-init.conf
+        regexp: '^PasswordAuthentication\s+yes'
+        line: 'PasswordAuthentication no'
+        backup: yes
+      tags: always
+      ignore_errors: yes
+
+    - name: Disable cloud-init SSH overrides (keeps hardening consistent)
+      copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-ssh.cfg
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          ssh_pwauth: false
+          disable_root: true
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Unattended upgrades
+    # -------------------------------------------------------------------------
+    - name: Configure unattended-upgrades settings
+      ansible.builtin.lineinfile:
+        path: /etc/apt/apt.conf.d/20auto-upgrades
+        regexp: '^{{ item.regexp }}'
+        line: '{{ item.line }}'
+        state: present
+      loop:
+        - { regexp: 'APT::Periodic::Update-Package-Lists', line: 'APT::Periodic::Update-Package-Lists "1";' }
+        - { regexp: 'APT::Periodic::Unattended-Upgrade', line: 'APT::Periodic::Unattended-Upgrade "1";' }
+        - { regexp: 'APT::Periodic::Download-Upgradeable-Packages', line: 'APT::Periodic::Download-Upgradeable-Packages "1";' }
+        - { regexp: 'APT::Periodic::AutocleanInterval', line: 'APT::Periodic::AutocleanInterval "7";' }
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Ensure SSH service is enabled
+    # -------------------------------------------------------------------------
+    - name: Ensure SSH service is enabled and started
+      systemd:
+        name: ssh
+        enabled: yes
+        state: started
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Reboot to apply kernel/initramfs + service changes
+    # -------------------------------------------------------------------------
+    - name: Reboot system
+      reboot:
+        msg: "Reboot initialized by Ansible playbook..."
+        reboot_timeout: 900
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Template cleanup (runs after reboot)
+    # -------------------------------------------------------------------------
+    - name: Find SSH host keys
+      find:
+        paths: /etc/ssh
+        patterns: "ssh_host_*"
+      register: ssh_keys
+      tags: cleanup
+
+    - name: Remove SSH host keys (regenerated on clone/boot)
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ ssh_keys.files }}"
+      tags: cleanup
+
+    - name: Remove root authorized_keys (optional; safer for generic template)
+      file:
+        path: /root/.ssh/authorized_keys
+        state: absent
+      tags: cleanup
+      ignore_errors: yes
+
+    - name: Remove udev persistent net rules (prevents clone NIC weirdness)
+      file:
+        path: /etc/udev/rules.d/70-persistent-net.rules
+        state: absent
+      tags: cleanup
+      ignore_errors: yes
+
+    # Delete machine-id and recreate symbolic link if needed
+    - name: Truncate /etc/machine-id to zero length
+      copy:
+        content: ""
+        dest: /etc/machine-id
+        owner: root
+        group: root
+        mode: "0644"
+      tags: cleanup
+
+    - name: Recreate /var/lib/dbus/machine-id symlink
+      file:
+        src: /etc/machine-id
+        dest: /var/lib/dbus/machine-id
+        state: link
+      tags: cleanup
+      ignore_errors: yes
+
+    # Clean apt database, orphan packages, and cloud-init state
+    - name: Clean the apt database
+      command: apt clean
+      tags: cleanup
+
+    - name: Remove orphan packages
+      apt:
+        autoremove: yes
+        purge: yes
+      tags: cleanup
+
+    - name: Clean cloud-init state (so clones re-run properly)
+      command: cloud-init clean
+      tags: cleanup
+
+    # Shutdown the system (so you can convert to template in Proxmox)
+    - name: Shutdown the system
+      command: poweroff
+      async: 1
+      poll: 0
+      tags: cleanup

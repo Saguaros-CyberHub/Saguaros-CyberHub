@@ -32,7 +32,7 @@ This is a general layout of the network.
 
 ![Saguaros CyberLab Network](https://github.com/echumley/Saguaros-CyberHub/blob/main/resources/images/CyberLabs-Network-v1.0.png?raw=true)
 
-*NOTE: The CyberHub heavily utilizes netested virtualization and network segmentation via SDNs, VLANs, and VXLANs*
+*NOTE: The CyberHub heavily utilizes nested virtualization (planned) and network segmentation via SDNs, VLANs, and VXLANs*
 
 ### Subnets
 
@@ -41,8 +41,8 @@ This is a general layout of the network.
 `100.101.0.0/16` - CyberLabs infrastructure \
 `100.102.0.0/16` - Crucible infrastructure \
 `100.103.0.0/16` - Forge infrastructure \
-`100.104-119.0.0/16` - Unused \
-`100.120-127.0.0/16` - Remote site infrastructure
+`100.104-114.0.0/16` - Unused \
+`100.115-127.0.0/16` - Remote site infrastructure
 
 ### VLANs
 
@@ -52,7 +52,9 @@ This is a general layout of the network.
 `x.x.40.0/24` on `VLAN 40`: WiFi Network - WiFi network in the case of local CTF events. \
 `x.x.50.0/24` on `VLAN 50`: DMZ Network - All externally-facing services, reverse proxies, VPN endpoints, etc. \
 `x.x.60.0/24` on `VLAN 60`: Lab Networks - Used for testing of new services/infrastructure, admin projects, etc. \
-`x.x.70.0/24` on `VLAN 80`: Quarantine Network \
+`x.x.70.0/24` on `VLAN 70`: Quarantine Network \
+`x.x.80.0/24` on `VLAN 80`:  \
+`x.x.90.0/24` on `VLAN 90`:  \
 `x.x.99.0/24` on `VLAN 99`: Ceph Network (not routed)
 
 ### IP Spacing
@@ -69,7 +71,8 @@ This is a general layout of the network.
 `x.x.x.60-69`: Storage servers \
 `x.x.x.70-79`: Remote server management 1 \
 `x.x.x.80-89`: Remote server management 2 \
-`x.x.x.90-99`: Remote server management 3 \
+`x.x.x.90-98`: Remote server management 3 \
+`x.x.x.99`: OOB Management Server (infrastructure dependant) \
 `x.x.x.100-254`: DHCP
 
 #### 100.x.20.0/24: Internal services
@@ -145,7 +148,6 @@ NOTE: These keys are not publically available, and until we implement a better s
 
 - `saguaros-admin-key`
 - `saguaros-ansible-key`
-- `range-ansible-key`
 
 ## CyberLabs Nested Cluster
 

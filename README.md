@@ -45,71 +45,128 @@ Here are the main modules that will make up the CyberHub:
 
 ![alt text](https://github.com/echumley/Saguaros-CyberHub/blob/main/resources/images/CyberHub-Architecture-v1.0.png?raw=true)
 
-## Project Roadmap
+# CyberHub Project Roadmap (Updated – 2026)
 
-### Stage 1
+This roadmap reflects current architecture decisions, recent development activity, and the evolving role of the **CyberCore** as the system control plane. Obsolete items have been removed or consolidated, and missing but critical work has been added.
 
-#### Goal: CyberHub Infrastructure Deployment
+## Stage 0 — Foundation & Control Plane (Mostly Complete)
 
-- [x] Network deployment
-- [x] Hardware deployment
-- [ ] Authentication & domain controller deployment (Keycloak, FreeIPA, SSSD configured)
-- [ ] Internal service template creation (VMs, Docker, K3s, etc.)
-- [ ] Module nested virtualization template creation
-- [ ] SIEM/SOAR deployment (Log ingestion stack, monitoring services)
-- [ ] Deploy necessary other internal services (Vault, automation frameworks)
+**Goal:** Stable, automatable core infrastructure
+**Status:** Active (~90% complete)
 
-### Stage 2
+- [x] Physical network deployment
+- [x] Compute & storage hardware deployment (Proxmox + Ceph)
+- [x] Identity & authentication backbone integration
+  - Keycloak (OIDC/SAML)
+  - FreeIPA / AD integration
+  - SSSD on Linux guests
+- [x] Proxmox SDN baseline (zones, VNets, VXLAN ranges)  
+- [x] Base VM & container templates
+  - Linux base templates
+  - Windows Server base templates
+- [x] CyberCore initial deployment
+- [x] PostgreSQL backend schema (users, modules, allocations, lanes)
+- [x] Automation orchestration layer (n8n as control fabric)
+- [x] Proxmox API + Ansible integration groundwork
+- [ ] Nested virtualization templates finalized
+- [ ] Secrets & credentials strategy
+  - Vault (or justified alternative)
+  - Service auth and key rotation model
+- [ ] Centralized logging baseline
+  - Proxmox, VM, container logs
+  - SIEM scope definition (Wazuh or alternative)
 
-#### Goal: CyberLabs Proof of Concept
+## Stage 1 — CyberCore Maturation
 
-- [ ] Authentication integration
-- [ ] Primary application deployment
-- [ ] CyberLabs internal system
-- [ ] Documentation upload and refinement
-- [ ] Proof of concept demonstration
+**Goal:** Establish CyberCore as the authoritative control plane  
+**Status:** Active
 
-### Stage 3
+- [x] CyberCore service separation & module awareness  
+- [x] SDN + VXLAN dynamic lane workflows  
+- [x] Database-driven orchestration model  
+- [x] Context-based isolation (users, teams, lanes)  
+- [ ] Module registration & capability discovery
+- [ ] Resource lifecycle tracking
+  - VM lifetime
+  - Lane TTL
+  - Persistent vs non-persistent state
+- [ ] RBAC enforcement via Keycloak roles
+- [ ] Admin observability dashboard (initial)
 
-#### Goal: Crucible Proof of Concept
+## Stage 2 — Crucible (CTF / Cyber Range)
 
-- [ ] Authentication integration
-- [ ] Primary application deployment (ctfd or custom framework)
-- [ ] Crucible internal system
-- [ ] Documentation upload and refinement
-- [ ] Proof of concept demonstration
+**Goal:** Fully isolated, repeatable cyber warfare range  
+**Status:** Active
 
-### Stage 4
+- [ ] Crucible authentication via CyberCore  
+- [ ] Lane orchestration (solo, team, KOTH)  
+- [ ] Vulnerable environment deployment  
+  - GOAD
+  - Linux vulnerability chains
+  - ICS/OT scenarios  
+- [ ] Flag validation & scoring backend  
+- [ ] Lane reset / rebuild automation  
+- [ ] Operator visibility & abuse controls  
+- [ ] Documentation & walkthrough authoring  
+- [ ] Internal proof-of-concept CTF event
 
-#### Goal: Alpha Launch & Private Deployment
+## Stage 3 — CyberLabs
 
-- [ ] Further development of CyberHub internal systems
-- [ ] Additional module deployments
-- [ ] Crucible vulnerable machine development
-- [ ] Pre-alpha testing & function verification
-- [ ] Alpha testing, feedback, and monitoring strategy development
-- [ ] Documentation refinement
-- [ ] Alpha launch & private deployment to UA Cyber Saguaros
+**Goal:** Student-facing lab provisioning at scale  
+**Status:** Planned
 
-### Stage 5
+- [ ] CyberLabs authentication via CyberCore  
+- [ ] Student-requested lab provisioning workflow  
+- [ ] Persistent vs non-persistent lab logic  
+- [ ] OS and tooling access models (RDP, SSH, browser-based)  
+- [ ] Instructor / admin controls  
+- [ ] Documentation
+  - Student guides
+  - Instructor guides
+  - Operator docs
+- [ ] Proof-of-concept demonstration
+- [ ] Offline / constrained network mode testing
 
-#### Goal: Beta Launch & Further Testing
 
-- [ ] Post-alpha refinement (bug-fixes, stabilization, etc.)
+## Stage 4 — Alpha Deployment
+
+**Goal:** Controlled real-world usage
+**Status:** Planned
+
+- [ ] CyberLabs + Crucible integration testing
+- [ ] Security review (auth boundaries, isolation)
+- [ ] Performance & scaling tests (10–50+ concurrent users)
+- [ ] Vulnerable content expansion
+- [ ] Logging, alerting, and failure handling
+- [ ] Documentation freeze (alpha)
+- [ ] Private alpha launch for UA Cyber Saguaros
+
+## Stage 5 — Beta & External Readiness
+
+**Goal:** Stability, UX, and portability
+**Status:** Future
+
+- [ ] Post-alpha bug fixes and stabilization
 - [ ] Performance optimization
-- [ ] UI improvement
-- [ ] Security & compliance refinement
-- [ ] Beta testing, feedback, and monitoring strategy development
-- [ ] Documentation refinement
-- [ ] Beta launch & public deployment supported
+- [ ] UI / UX improvements (admin and student)
+- [ ] Security and compliance refinement
+- [ ] Expanded testing (faculty, partners)
+- [ ] Public-facing documentation
+- [ ] Beta launch with controlled external access
 
-### Stage 6
+## Stage 6 — Release & Expansion
 
-#### Goal: Release & Live Preview
+**Goal:** Sustainable platform and academic impact  
+**Status:** Long-term
 
-- [ ] Publish first release
-- [ ] Deploy live preview
-- [ ] Continue improvements and bug fixes
+- [ ] Versioned public release
+- [ ] Live demo / preview deployment
+- [ ] Curriculum alignment across courses
+- [ ] Modular deployment profiles
+  - Full CyberHub
+  - Modular mobile deployments
+  - Range-only installs
+- [ ] Ongoing improvements
 
 ## Network Traffic Diagram
 

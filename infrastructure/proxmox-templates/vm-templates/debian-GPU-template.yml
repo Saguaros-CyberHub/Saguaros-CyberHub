@@ -1,0 +1,290 @@
+---
+- name: Create ideal Debian 13.2 Proxmox base template (passthrough + vGPU ready)
+  hosts: all
+  become: true
+  vars:
+    trusted_ssh_subnets:
+      - 100.64.10.0/24
+      - 100.64.30.0/24
+      - 100.100.10.0/24
+      - 100.100.30.0/24
+      - 10.0.254.0/24
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # Base updates
+    # -------------------------------------------------------------------------
+    - name: Update apt cache and dist-upgrade
+      apt:
+        update_cache: true
+        upgrade: dist
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Core Proxmox guest packages
+    # -------------------------------------------------------------------------
+    - name: Install core guest packages (QGA, cloud-init, SSH, unattended-upgrades)
+      apt:
+        name:
+          - qemu-guest-agent
+          - cloud-init
+          - unattended-upgrades
+          - sudo
+          - ca-certificates
+          - curl
+        state: present
+        update_cache: true
+      tags: always
+
+    - name: Enable and start QEMU Guest Agent
+      systemd:
+        name: qemu-guest-agent
+        enabled: true
+        state: started
+      tags: always
+
+    - name: Enable and start SSH
+      systemd:
+        name: ssh
+        enabled: true
+        state: started
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # GPU / PCI prerequisites (NO NVIDIA DRIVER INSTALLED IN TEMPLATE)
+    # - Makes clones painless for both passthrough and vGPU
+    # -------------------------------------------------------------------------
+    - name: Install GPU & PCI prerequisites (no driver)
+      apt:
+        name:
+          - pciutils
+          - usbutils
+          - hwinfo
+          - dkms
+          - build-essential
+          - pkg-config
+          - libglvnd0
+          - libglvnd-dev
+          # Prefer exact headers, but this can fail if that exact version isn't in repo
+          - "linux-headers-{{ ansible_kernel }}"
+        state: present
+        update_cache: true
+      register: headers_install
+      ignore_errors: true
+      tags: always
+
+    - name: Fallback - install generic Debian headers meta-package if exact headers missing
+      apt:
+        name:
+          - linux-headers-amd64
+        state: present
+        update_cache: true
+      when: headers_install is failed
+      tags: always
+
+    - name: Blacklist nouveau (useful for NVIDIA driver install later inside clones)
+      copy:
+        dest: /etc/modprobe.d/blacklist-nouveau.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          blacklist nouveau
+          options nouveau modeset=0
+      tags: always
+
+    - name: Update initramfs after blacklisting nouveau
+      command: update-initramfs -u
+      tags: always
+
+    - name: Create CUDA environment placeholder (safe even without CUDA installed)
+      copy:
+        dest: /etc/profile.d/cuda.sh
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # CUDA paths will be populated when installed in a clone
+          export PATH=/usr/local/cuda/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Optional: reduce NIC renaming surprises across clones
+    # -------------------------------------------------------------------------
+    - name: Reduce NIC renaming surprises across clones (systemd link policy)
+      copy:
+        dest: /etc/systemd/network/99-default.link
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Link]
+          NamePolicy=kernel database onboard slot path
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Firewall (UFW)
+    # -------------------------------------------------------------------------
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+        update_cache: true
+      tags: always
+
+    - name: Allow SSH from trusted subnets
+      ansible.builtin.ufw:
+        rule: allow
+        proto: tcp
+        from_ip: "{{ item }}"
+        port: "22"
+      loop: "{{ trusted_ssh_subnets }}"
+      tags: always
+
+    - name: Enable UFW firewall
+      ansible.builtin.ufw:
+        state: enabled
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Timezone
+    # -------------------------------------------------------------------------
+    - name: Check the current timezone
+      command: timedatectl
+      register: timezone_output
+      changed_when: false
+      tags: always
+
+    - name: Set timezone to America/Phoenix
+      command: timedatectl set-timezone America/Phoenix
+      when: "'America/Phoenix' not in timezone_output.stdout"
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # SSH hardening
+    # -------------------------------------------------------------------------
+    - name: Configure SSHD (no root login, no password auth)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+        create: true
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 9' }
+      tags: always
+
+    - name: Disable cloud-init SSH overrides (keeps hardening consistent)
+      copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-ssh.cfg
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          ssh_pwauth: false
+          disable_root: true
+      tags: always
+
+    - name: Restart SSH to apply config changes
+      systemd:
+        name: ssh
+        state: restarted
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Unattended upgrades
+    # -------------------------------------------------------------------------
+    - name: Configure unattended-upgrades periodic settings
+      ansible.builtin.lineinfile:
+        path: /etc/apt/apt.conf.d/20auto-upgrades
+        create: true
+        regexp: '^{{ item.regexp }}'
+        line: '{{ item.line }}'
+        state: present
+      loop:
+        - { regexp: 'APT::Periodic::Update-Package-Lists', line: 'APT::Periodic::Update-Package-Lists "1";' }
+        - { regexp: 'APT::Periodic::Unattended-Upgrade', line: 'APT::Periodic::Unattended-Upgrade "1";' }
+        - { regexp: 'APT::Periodic::Download-Upgradeable-Packages', line: 'APT::Periodic::Download-Upgradeable-Packages "1";' }
+        - { regexp: 'APT::Periodic::AutocleanInterval', line: 'APT::Periodic::AutocleanInterval "7";' }
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Reboot to apply initramfs + service changes
+    # -------------------------------------------------------------------------
+    - name: Reboot system
+      reboot:
+        msg: "Reboot initialized by Ansible playbook..."
+        reboot_timeout: 900
+      tags: always
+
+    # -------------------------------------------------------------------------
+    # Template cleanup (runs after reboot)
+    # -------------------------------------------------------------------------
+    - name: Find SSH host keys
+      find:
+        paths: /etc/ssh
+        patterns: "ssh_host_*"
+      register: ssh_keys
+      tags: cleanup
+
+    - name: Remove SSH host keys (regenerated on clone/boot)
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ ssh_keys.files }}"
+      tags: cleanup
+
+    - name: Remove root authorized_keys (optional; safer for generic template)
+      file:
+        path: /root/.ssh/authorized_keys
+        state: absent
+      tags: cleanup
+      ignore_errors: true
+
+    - name: Remove udev persistent net rules (prevents clone NIC weirdness)
+      file:
+        path: /etc/udev/rules.d/70-persistent-net.rules
+        state: absent
+      tags: cleanup
+      ignore_errors: true
+
+    - name: Truncate /etc/machine-id to zero length
+      copy:
+        content: ""
+        dest: /etc/machine-id
+        owner: root
+        group: root
+        mode: "0644"
+      tags: cleanup
+
+    - name: Recreate /var/lib/dbus/machine-id symlink (ignore if not applicable)
+      file:
+        src: /etc/machine-id
+        dest: /var/lib/dbus/machine-id
+        state: link
+      tags: cleanup
+      ignore_errors: true
+
+    - name: Clean the apt database
+      command: apt clean
+      tags: cleanup
+
+    - name: Remove orphan packages
+      apt:
+        autoremove: true
+        purge: true
+      tags: cleanup
+
+    - name: Clean cloud-init state (so clones re-run properly)
+      command: cloud-init clean
+      tags: cleanup
+
+    - name: Shutdown the system (so you can convert to template in Proxmox)
+      command: poweroff
+      async: 1
+      poll: 0
+      tags: cleanup
