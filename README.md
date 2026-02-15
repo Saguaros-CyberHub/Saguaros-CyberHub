@@ -10,7 +10,7 @@ The Saguaros CyberHub is the official cybersecurity lab, cyber warfare range, an
 
 1. Provide club members with the opportunity to supplement their undergraduate and graduate-level coursework with hands-on offensive and defensive security training.
 2. Create a training model and environment for club Capture the Flag (CTF) teams.
-3. Open a virtual learning and compute environment for student, researcher, and faculty projects.
+3. Open a virtual learning and computing environment for student, researcher, and faculty projects.
 4. Stay free for club members.
 
 ## Project Ethos
@@ -55,7 +55,7 @@ In progress. An installation script will be provided to guide your through the s
 
 ## Project Diagram
 
-![CyberHub Architecture](https://github.com/echumley/Saguaros-CyberHub/blob/main/resources/images/CyberHub-Architecture-v1.0.png?raw=true)
+![CyberHub Architecture](https://github.com/Saguaros-CyberHub/Saguaros-CyberHub/blob/97c90549d6e269e96fab546df7b03c37780c07c6/resources/images/CyberHub-Architecture-v1.1.png)
 
 # CyberHub Project Roadmap (Updated – 2026)
 
@@ -174,9 +174,9 @@ This roadmap reflects current architecture decisions, recent development activit
 - [ ] Live demo and preview deployment
 - [ ] Curriculum alignment across courses
 - [ ] Modular deployment profiles
-  - Full CyberHub
-  - Modular mobile deployments
-  - Range-only installs
+  - [ ] Full CyberHub
+  - [ ] Modular mobile deployments
+  - [ ] Range-only installs
 - [ ] Ongoing improvements
 
 ## Network Traffic Diagram
@@ -191,6 +191,10 @@ This roadmap reflects current architecture decisions, recent development activit
 ## Virtualization Infrastructure
 
 ![CyberHub Virtualization](https://github.com/echumley/Saguaros-CyberHub/blob/main/resources/images/CyberHub-Virtualization-v1.0.png?raw=true)
+
+## Proxmox SDN Design for Isolation & Scalability
+
+![Proxmox SDN Design](https://github.com/Saguaros-CyberHub/Saguaros-CyberHub/blob/97c90549d6e269e96fab546df7b03c37780c07c6/resources/images/ProxmoxSDN-Fabric-v1.0.png)
 
 ## Infrastructure and Automation
 
@@ -254,7 +258,7 @@ CyberWiki provides walkthroughs, playbooks, cheat sheets, and project documentat
 
 ### The Archive
 
-The Archive provides long-term storage for malware samples, research artifacts, scrapped datasets, and related materials. Access is expected to be restricted and policy-driven.
+The Archive provides long-term storage for malware samples, research artifacts, scraped datasets, and related materials. Access is expected to be restricted and policy-driven.
 
 ### The Forge
 
