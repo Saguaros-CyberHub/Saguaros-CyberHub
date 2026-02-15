@@ -1,6 +1,6 @@
 <mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.3.0 Chrome/140.0.7339.249 Electron/38.7.2 Safari/537.36" version="29.3.0">
   <diagram name="Page-1" id="6RuGK-DXMg6P7hwlaR0B">
-    <mxGraphModel dx="1178" dy="509" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="818" dy="353" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -258,6 +258,195 @@
         </mxCell>
         <mxCell id="6AvHmwCuxBkLXxubPdAX-117" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fontSize=8;verticalAlign=middle;fillColor=#FF3333;strokeColor=#ae4132;" value="User n VNet" vertex="1">
           <mxGeometry height="10" width="80" x="585" y="227.5" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-1" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="330" y="148.75" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-2" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="330" y="237.5" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-3" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="330" y="327.5" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-4" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="455" y="148.75" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-5" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="455" y="237.5" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-6" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="455" y="327.5" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-7" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="580" y="148.75" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-8" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="580" y="237.5" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-9" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="12.5" width="11.25" x="580" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-10" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="178.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-11" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="188.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-12" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.06" y="198.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-13" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="208.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-14" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.06" y="218.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-15" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="228.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-22" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="268.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-23" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.06" y="278.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-24" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="288.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-25" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="298.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-26" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.06" y="308.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-27" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="318.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-28" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.06" y="358.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-29" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="368.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-30" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="378.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-31" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="388.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-32" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="398.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-33" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="587.12" y="408.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-34" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="358.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-35" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="368.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-36" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="378.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-37" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="388.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-38" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="398.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-39" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="408.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-40" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="318.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-41" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="308.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-42" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="298.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-43" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="288.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-44" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="278.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-45" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="268.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-46" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="228.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-47" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="218.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-48" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="208.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-49" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="198.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-50" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.12" y="188.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-51" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="462.06" y="178.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-52" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.12" y="178.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-53" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="188.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-54" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.12" y="198.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-55" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="208.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-56" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.12" y="218.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-57" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="228.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-58" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="268.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-59" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="278.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-60" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="288.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-61" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="298.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-62" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="308.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-63" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="318.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-64" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="358.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-65" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="368.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-66" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="378.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-67" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="388.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-68" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="398.13" as="geometry" />
+        </mxCell>
+        <mxCell id="tVJGiJrOadvVrQAeY30r-69" parent="1" style="image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VPN_Gateway.svg;" value="" vertex="1">
+          <mxGeometry height="8.75" width="7.88" x="337.06" y="408.13" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
