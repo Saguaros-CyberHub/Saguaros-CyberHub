@@ -25,21 +25,32 @@
     mgmt_ssh_port: 22
 
     # DHCP/DNS model A: clients use gateway as DNS, gateway forwards upstream
-    upstream_dns: ""           # internal resolver/router
+    # For lanes, this should point to their hosting module's gateway IP (e.g. 100.101.0.1)
+    upstream_dns: ""           # e.g., "100.101.0.1" | set during instantiation (module gateway IP)
     dhcp_dns_servers: ["192.18.0.1"]     # hand out gateway as DNS
     dhcp_lease_time: "12h"
+
+    # Module gateway coordination (enforce lane isolation and service access)
+    # During instantiation, set these for the module hosting this lane
+    # Example for CyberLabs module: module_gateway_ip: "100.101.0.1", transit_zone: "100.101.0.0/16"
+    module_gateway_ip: ""      # e.g., "100.101.0.1" | IP of module's management gateway
+    transit_zone: ""           # e.g., "100.101.0.0/16" | module's transit zone CIDR
 
     # SIEM/logging export (optional)
     siem_server: ""        # e.g., "192.18.20.50" (leave blank to disable forwarding) | will implement in a later version
     syslog_port: 514
 
-    # Anti-breakout for lane hosts (block reaching internal/private ranges + mgmt subnets from lane)
+    # Anti-breakout for lane hosts (block reaching internal/private ranges + mgmt subnets + all module networks)
     blocked_cidrs:
       - "10.0.0.0/8"
       - "172.16.0.0/12"
       - "192.168.0.0/16"
-      - "100.64.0.0/10"
-      - "10.0.254.0/24"
+      - "100.64.0.0/10"        # CGNAT range
+      - "100.100.0.0/16"       # Management/Infrastructure networks
+      - "100.101.0.0/16"       # CyberLabs module network
+      - "100.102.0.0/16"       # Crucible module network
+      - "100.103.0.0/16"       # Forge module network
+      - "10.0.254.0/24"        # Admin VPN range
   
     # Allowed outbound traffic from lane to uplink (NEW connections)
     allow_out_tcp_ports: [80, 443, 22]
@@ -216,8 +227,10 @@
           dhcp-option=6,{{ dhcp_dns_servers | join(',') }}
 
           # Gateway forwards upstream (scenario control)
+          {% if upstream_dns %}
           no-resolv
           server={{ upstream_dns }}
+          {% endif %}
 
           # Hygiene + logs
           domain-needed
@@ -228,6 +241,28 @@
     - name: Validate dnsmasq config before starting/restarting
       command: dnsmasq --test
       changed_when: false
+
+    - name: Check wan0 has IP before starting dnsmasq (safety check)
+      shell: |
+        set -e
+        attempt=0
+        max_attempts=30
+        while [ $attempt -lt $max_attempts ]; do
+          if ip -4 addr show dev {{ wan_if }} | grep -q "inet "; then
+            exit 0
+          fi
+          sleep 1
+          attempt=$((attempt + 1))
+        done
+        echo "ERROR: {{ wan_if }} did not get DHCP address after 30s"
+        exit 1
+      args:
+        executable: /bin/sh
+
+    - name: Validate upstream DNS reachable (if configured)
+      command: ping -c 1 -w 5 {{ upstream_dns }}
+      when: upstream_dns
+      failed_when: false
 
     - name: Ensure dnsmasq is started
       command: rc-service dnsmasq start
@@ -322,6 +357,9 @@
           -A INPUT -i {{ lan_if }} -p udp --dport 53 -j ACCEPT
           -A INPUT -i {{ lan_if }} -p tcp --dport 53 -j ACCEPT
 
+          # Allow clients to query time (NTP)
+          -A INPUT -i {{ lan_if }} -p udp --dport 123 -j ACCEPT
+
           # Allow clients to ping the gateway
           -A INPUT -i {{ lan_if }} -p icmp --icmp-type echo-request -j ACCEPT
 
@@ -344,6 +382,17 @@
           -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp --dport 53 -j REJECT --reject-with icmp-port-unreachable
           {% endif %}
 
+          # Lane isolation: allow DNS/NTP to module gateway only
+          {% if module_gateway_ip %}
+          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p udp -m multiport --dports 53,123 -j ACCEPT
+          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p tcp --dport 53 -j ACCEPT
+          {% endif %}
+
+          # Lane isolation: block all other hosts in transit zone (prevent lane-to-lane access)
+          {% if transit_zone %}
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -d {{ transit_zone }} ! -d {{ module_gateway_ip }} -j DROP
+          {% endif %}
+
           # Allow NEW outbound from lane -> WAN (restricted ports)
           {% for p in allow_out_tcp_ports %}
           -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp --dport {{ p }} -m conntrack --ctstate NEW -j ACCEPT
@@ -356,8 +405,18 @@
           # Explicitly block inbound from WAN -> LAN
           -A FORWARD -i {{ wan_if }} -o {{ lan_if }} -j DROP
 
-          # Final allow: lane subnet may egress to WAN (DNS bypass already blocked above)
-          -A FORWARD -s {{ lan_net }} -i {{ lan_if }} -o {{ wan_if }} -j ACCEPT
+          # UDP egress (NTP, DNS replies via ESTABLISHED, ephemeral responses)
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p udp -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
+
+          # TCP egress is limited to specific ports (defined above in allow_out_tcp_ports)
+          # All other traffic to WAN defaults to DROP (implicit)
+
+          # --- OUTPUT (gateway itself) ---
+          # Allow gateway to send syslog to SIEM (if configured)
+          {% if siem_server %}
+          -A OUTPUT -o {{ wan_if }} -d {{ siem_server }} -p tcp --dport {{ syslog_port }} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+          {% endif %}
+
           COMMIT
 
           *nat
