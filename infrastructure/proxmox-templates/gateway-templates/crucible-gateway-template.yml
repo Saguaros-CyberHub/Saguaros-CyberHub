@@ -188,7 +188,6 @@
         executable: /bin/sh
       when: lan_cidr not in lan_addr_check.stdout
 
-
     # -------------------------
     # WAN interface addressing (DHCP)
     # -------------------------
