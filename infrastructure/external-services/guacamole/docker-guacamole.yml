@@ -1,0 +1,58 @@
+--- # Import and Run a Docker Compose Stack for Apache Guacamole
+- name: Import and Run a Docker Compose Stack
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    compose_file: "docker-compose.yml"
+    config_dir: "config"
+    env_file: ".env"
+    dir_path: "/home/cactus-admin/apache-guacamole"
+    owner_group: cactus-admin
+    compose_flags: "--remove-orphans -d"
+
+  tasks:
+    - name: Ensure remote directory exists
+      ansible.builtin.file:
+        path: "{{ dir_path }}"
+        state: directory
+        owner: "{{ owner_group }}"
+        group: "{{ owner_group }}"
+        mode: "0755"
+
+    - name: Import Docker Compose file
+      ansible.builtin.copy:
+        src: "{{ compose_file }}"
+        dest: "{{ dir_path }}/{{ compose_file }}"
+        owner: "{{ owner_group }}"
+        group: "{{ owner_group }}"
+        mode: "0644"
+
+    - name: Import .env file
+      ansible.builtin.copy:
+        src: "{{ env_file }}"
+        dest: "{{ dir_path }}/{{ env_file }}"
+        owner: "{{ owner_group }}"
+        group: "{{ owner_group }}"
+        mode: "0600"
+
+    - name: Import configurations
+      ansible.builtin.copy:
+        src: "{{ config_dir }}/"
+        dest: "{{ dir_path }}/{{ config_dir }}/"
+        owner: "{{ owner_group }}"
+        group: "{{ owner_group }}"
+        mode: preserve
+
+    - name: Start Docker Compose stack
+      ansible.builtin.command: >
+        docker compose -f {{ compose_file }} up {{ compose_flags }}
+      args:
+        chdir: "{{ dir_path }}"
+      register: up_out
+      changed_when: >
+        ('Creating' in up_out.stdout) or
+        ('Recreating' in up_out.stdout) or
+        ('Starting' in up_out.stdout) or
+        ('Pulling' in up_out.stdout)

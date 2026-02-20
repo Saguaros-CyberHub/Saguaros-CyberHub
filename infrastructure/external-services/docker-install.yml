@@ -1,0 +1,91 @@
+---
+- name: Install Docker Engine + Compose for RHEL-based systems
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    docker_users: [cactus-admin]
+    docker_run_hello_world: false
+
+  pre_tasks:
+    - name: Fail if not RHEL-based
+      ansible.builtin.fail:
+        msg: "Playbook intended for RHEL-based systems. Detected: {{ ansible_facts[\"distribution\"] }} {{ ansible_facts[\"distribution_version\"] }}"
+      when: ansible_facts["distribution"] not in ["RedHat", "Rocky"]
+    
+    - name: Fail if RHEL-based distro not major version
+      ansible.builtin.fail:
+        msg: "Unsupported RHEL version: {{ ansible_facts[\"distribution_major_version\"] }}"
+      when: (ansible_facts["distribution_major_version"] | int) not in [8, 9, 10]
+  
+  tasks:
+    - name: Upgrade packages
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: true
+
+    - name: Remove old versions
+      ansible.builtin.dnf:
+        name:
+          - docker
+          - docker-client
+          - docker-client-latest
+          - docker-common
+          - docker-latest
+          - docker-latest-logrotate
+          - docker-logrotate
+          - docker-engine
+          - podman
+          - runc
+        state: absent
+      ignore_errors: true
+    
+    - name: Install DNF Plugin Core
+      ansible.builtin.dnf:
+        name: dnf-plugins-core
+        state: present
+
+    - name: Add Docker CE Repository
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/rhel/docker-ce.repo
+        dest: /etc/yum.repos.d/docker-ce.repo
+        mode: "0644"
+
+    - name: Install Docker + Dependencies
+      ansible.builtin.dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Enable & Start Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+  
+    - name: Add Users to Docker Group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_users }}"
+      when: docker_users | length > 0
+    
+    - name: Verify Docker & Docker Compose are Installed
+      ansible.builtin.command: "{{ item }}"
+      changed_when: false
+      loop:
+        - docker --version
+        - docker compose version
+
+    - name: Run hello-world (non-prod validation)
+      ansible.builtin.command: docker run --rm hello-world
+      when: docker_run_hello_world | bool
+      changed_when: false

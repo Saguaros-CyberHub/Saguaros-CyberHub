@@ -102,14 +102,27 @@ This is a general layout of the network.
 #### 10.x.50.0/24: DMZ for externally facing services
 
 `x.x.x.1`: VLAN/subnet gateway \
+`x.x.x.2-9`: Unused \
+`x.x.x.10`: DMZ reverse proxy
+`x.x.x.11-99`: Unused \
+`x.x.x.100-254`: DHCP
+
+#### 100.x.60.0/24: Lab network
+
+`x.x.x.1`: VLAN/subnet gateway \
+`x.x.x.100-254`: DHCP
+
+#### 100.x.70.0/24: External services
+
+`x.x.x.1`: VLAN/subnet gateway \
 `x.x.x.2-9`: External access (Traefik, Crowdsec, etc.) \
 `x.x.x.10-99`: CyberHub services (ctfd, Moodle, etc.) \
 `x.x.x.100-254`: DHCP
 
-#### 100.x.60-10.x.99.0/24: Lab networks
+#### 100.x.90.0/24: Quarantine
 
 `x.x.x.1`: VLAN/subnet gateway \
-`x.x.x.100-254`: DHCP
+`x.x.x.99-254`: DHCP
 
 ## Architecture Overview
 

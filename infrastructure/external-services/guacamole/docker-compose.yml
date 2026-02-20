@@ -1,0 +1,106 @@
+services:
+  guacd:
+    container_name: guacd
+    image: guacamole/guacd:latest
+    restart: unless-stopped
+    ports:
+      - "4822:4822"
+    networks:
+      - guacamole_network
+
+  postgres:
+    container_name: guacamole-postgres
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USERNAME}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data:z
+      - ./config/postgres/:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - guacamole_network
+
+  guacamole:
+    container_name: guacamole
+    image: guacamole/guacamole:latest
+    restart: unless-stopped
+
+    # ------------------------------------------------------------
+    # DELETE these lines once NPM is in front of Guacamole
+    # (NPM will proxy to this host privately; no direct access needed)
+    ports:
+      - "8080:8080"
+    # ------------------------------------------------------------
+
+    environment:
+      GUACD_HOSTNAME: guacd
+      GUACD_PORT: "4822"
+      GUACAMOLE_ADMIN_USERNAME: ${GUACAMOLE_ADMIN_USERNAME}
+      GUACAMOLE_ADMIN_PASSWORD: ${GUACAMOLE_ADMIN_PASSWORD}
+      POSTGRESQL_HOSTNAME: postgres
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: ${POSTGRES_DB}
+      POSTGRESQL_USER: ${POSTGRES_USERNAME}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD}
+      BAN_ENABLED: "true"
+      BAN_MAX_INVALID_ATTEMPTS: "5"
+      BAN_ADDRESS_DURATION: "300"
+      BAN_MAX_ADDRESSES: "10485670"
+
+      # ------------------------------------------------------------
+      # KEEP these when you enable NPM (remote proxy on another host)
+      # Makes Guac see the real client IP and correct scheme/port
+      # REMOTE_IP_VALVE_ENABLED: "true"
+      # REMOTE_IP_VALVE_REMOTE_IP_HEADER: "x-forwarded-for"
+      # REMOTE_IP_VALVE_PROTOCOL_HEADER: "x-forwarded-proto"
+      # REMOTE_IP_VALVE_PORT_HEADER: "x-forwarded-port"
+      # ------------------------------------------------------------
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      guacd:
+        condition: service_started
+    networks:
+      - guacamole_network
+
+    # ------------------------------------------------------------
+    # NPM PLUS (running on a DIFFERENT host) - COMMENTED FOR NOW
+    #
+    # On the NPM host, create a Proxy Host:
+    #   Domain: rdp.saguaroscyberhub.org
+    #   Scheme: http
+    #   Forward Hostname/IP: <GUAC_HOST_IP>   (this machine's IP, not "guacamole")
+    #   Forward Port: 8080
+    #   Websockets Support: ON  (required)
+    #
+    # If you want the clean root path:
+    #   NPM -> Custom Locations:
+    #     Location: /
+    #     Forward Path: /guacamole/
+    #
+    # NPM -> Advanced (paste):
+    #   proxy_set_header Host $http_host;
+    #   proxy_set_header X-Real-IP $remote_addr;
+    #   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    #   proxy_set_header X-Forwarded-Proto $scheme;
+    #   proxy_set_header X-Forwarded-Port $server_port;
+    #
+    # TLS in NPM:
+    #   Cert must match rdp.saguaroscyberhub.org (wildcard or SAN)
+    #   Force HTTPS: ON
+    #   HSTS: OFF until stable
+    # ------------------------------------------------------------
+
+networks:
+  guacamole_network:
+    driver: bridge
