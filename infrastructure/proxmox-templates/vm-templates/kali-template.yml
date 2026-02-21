@@ -1,60 +1,72 @@
 ---
-- name: Create ideal Linux Mint Proxmox base template (passthrough + vGPU ready)
+- name: Create ideal Linux Kali Proxmox base template
   hosts: all
   become: true
-  tasks:
+  gather_facts: true
 
-    # -------------------------------------------------------------------------
-    # Base updates
-    # -------------------------------------------------------------------------
-    - name: Install updates on Mint
-      apt:
+  tasks:
+    - name: Install updates on Kali
+      ansible.builtin.apt:
         upgrade: dist
         update_cache: true
       tags: always
 
-    # -------------------------------------------------------------------------
-    # Core Proxmox guest packages
-    # -------------------------------------------------------------------------
-    - name: Install QEMU Guest Agent, Cloud-Init, and Unattended Upgrades on Mint
-      apt:
+    # ----- Install required packages -----
+    - name: Install QEMU Guest Agent, Cloud-Init, and Unattended Upgrades on Kali
+      ansible.builtin.apt:
         name:
+          - cloud-init
+          - cloud-guest-utils
           - qemu-guest-agent
           - unattended-upgrades
+          - kali-linux-large
+          - kali-tools-web
+          - kali-tools-passwords
+          - bloodhound
+          - neo4j
+          - crackmapexec
+          - kali-tools-reverse-engineering
+          - kali-tools-detect
+          - kali-tools-respond
+          - kali-tools-recover
+          - kali-tools-forensics
+          - jq
+          - golang
+          - rustc
+          - openssh-server
+          - xrdp
+          - xorgxrdp
+          - kali-desktop-xfce
+          - dbus-x11
         state: present
-        update_cache: yes
       tags: always
 
-    - name: Enable and start QEMU Guest Agent
-      systemd:
+    - name: Enable QEMU Guest Agent
+      ansible.builtin.systemd:
         name: qemu-guest-agent
         enabled: yes
-        state: started
       tags: always
 
-    # -------------------------------------------------------------------------
-    # Firewall (UFW)
-    # -------------------------------------------------------------------------
-    - name: Allow SSH from Trusted subnets
-      ansible.builtin.ufw:
-        rule: allow
-        proto: tcp
-        from_ip:
-          - 100.100.10.0/24 # Management VLAN
-          - 100.100.30.0/24 # Trusted VLAN
-          - 10.0.254.0/24 # Admin VPN range
-          - 10.1.0.0/16 # Student VPN range
-        port: "22"
-      tags: always
+    # PURPOSEFULLY NOT ENABLING UFW FOR ATTACK BOX TEMPLATE - USER CAN ENABLE POST-CLONE IF DESIRED
+    # ----- Firewall (UFW) -----
+    # - name: Allow SSH from Trusted subnets
+    #   ansible.builtin.ufw:
+    #     rule: allow
+    #     proto: tcp
+    #     from_ip:
+    #       - 100.100.10.0/24 # Management VLAN
+    #       - 100.100.30.0/24 # Trusted VLAN
+    #       - 10.0.254.0/24 # Admin VPN range
+    #       - 10.1.0.0/16 # Student VPN range
+    #     port: "22"
+    #   tags: always
 
-    - name: Enable UFW firewall
-      ansible.builtin.ufw:
-        state: enabled
-      tags: always
+    # - name: Enable UFW firewall
+    #   ansible.builtin.ufw:
+    #     state: enabled
+    #   tags: always
 
-    # -------------------------------------------------------------------------
-    # Timezone
-    # -------------------------------------------------------------------------
+    # ----- Timezone -----
     - name: Check the current timezone
       ansible.builtin.command: timedatectl
       register: timezone_output
@@ -66,9 +78,7 @@
       when: "'America/Phoenix' not in timezone_output.stdout"
       tags: always
 
-    # -------------------------------------------------------------------------
-    # SSH hardening
-    # -------------------------------------------------------------------------
+    # ----- SSH hardening -----
     - name: Configure SSHD (no root login, no password auth)
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
@@ -83,7 +93,7 @@
         - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 9' }
       tags: always
 
-    - name: Ensure PasswordAuthentication is set to no (cloud-init ssh drop-in)
+    - name: Ensure PasswordAuthentication is set to no # cloud-init ssh drop-in
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config.d/50-cloud-init.conf
         regexp: '^PasswordAuthentication\s+yes'
@@ -92,8 +102,8 @@
       tags: always
       ignore_errors: yes
 
-    - name: Disable cloud-init SSH overrides (keeps hardening consistent)
-      copy:
+    - name: Disable cloud-init SSH overrides  # keeps hardening consistent
+      ansible.builtin.copy:
         dest: /etc/cloud/cloud.cfg.d/99-disable-ssh.cfg
         owner: root
         group: root
@@ -103,9 +113,7 @@
           disable_root: true
       tags: always
 
-    # -------------------------------------------------------------------------
-    # Unattended upgrades
-    # -------------------------------------------------------------------------
+    # ----- Unattended upgrades -----
     - name: Configure unattended-upgrades settings
       ansible.builtin.lineinfile:
         path: /etc/apt/apt.conf.d/20auto-upgrades
@@ -119,92 +127,133 @@
         - { regexp: 'APT::Periodic::AutocleanInterval', line: 'APT::Periodic::AutocleanInterval "7";' }
       tags: always
 
-    # -------------------------------------------------------------------------
-    # Ensure SSH service is enabled
-    # -------------------------------------------------------------------------
-    - name: Ensure SSH service is enabled and started
-      systemd:
+    # ----- Ensure SSH service is enabled -----
+    - name: Ensure SSH service is enabled
+      ansible.builtin.systemd:
         name: ssh
         enabled: yes
-        state: started
       tags: always
 
-    # -------------------------------------------------------------------------
-    # Reboot to apply kernel/initramfs + service changes
-    # -------------------------------------------------------------------------
+    # ----- Configure xrdp startwm.sh for Guacamole compatibility -----
+    - name: Ensure xrdp can read its cert key # common requirement for SSL/TLS support
+      user:
+        name: xrdp
+        groups: ssl-cert
+        append: true
+      tags: always
+
+    - name: Force XFCE via system-wide XRDP startwm.sh
+      copy:
+        dest: /etc/xrdp/startwm.sh
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          [ -r /etc/profile ] && . /etc/profile
+          [ -r ~/.profile ] && . ~/.profile
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+          export DESKTOP_SESSION=xfce
+          export XDG_SESSION_DESKTOP=xfce
+          export XDG_CURRENT_DESKTOP=XFCE
+          exec dbus-launch --exit-with-session startxfce4
+      tags: always
+
+    - name: Default session for NEW users # copied on account creation
+      copy:
+        dest: /etc/skel/.xsession
+        owner: root
+        group: root
+        mode: "0644"
+        content: "startxfce4\n"
+
+    - name: Enable xrdp services
+      systemd:
+        name: "{{ item }}"
+        enabled: true
+      loop:
+        - xrdp
+        - xrdp-sesman
+
+    # ----- Validate SSH configuration -----
+    - name: Test SSHD configuration syntax
+      ansible.builtin.command: sshd -t
+      changed_when: false
+      tags: always
+
+    # ----- Reboot to apply kernel/initramfs + service changes -----
     - name: Reboot system
-      reboot:
+      ansible.builtin.reboot:
         msg: "Reboot initialized by Ansible playbook..."
         reboot_timeout: 900
       tags: always
 
-    # -------------------------------------------------------------------------
-    # Template cleanup (runs after reboot)
-    # -------------------------------------------------------------------------
+    # ----- Template cleanup (runs after reboot) -----
     - name: Find SSH host keys
-      find:
+      ansible.builtin.find:
         paths: /etc/ssh
         patterns: "ssh_host_*"
       register: ssh_keys
-      tags: cleanup
+      tags: always
 
-    - name: Remove SSH host keys (regenerated on clone/boot)
-      file:
+    - name: Remove SSH host keys # regenerated on clone/boot
+      ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
       loop: "{{ ssh_keys.files }}"
-      tags: cleanup
+      tags: always
 
-    - name: Remove root authorized_keys (optional; safer for generic template)
-      file:
+    - name: Remove root authorized_keys # optional - safer for generic template
+      ansible.builtin.file:
         path: /root/.ssh/authorized_keys
         state: absent
-      tags: cleanup
+      tags: always
       ignore_errors: yes
 
-    - name: Remove udev persistent net rules (prevents clone NIC weirdness)
-      file:
+    - name: Remove udev persistent net rules # prevents clone NIC weirdness
+      ansible.builtin.file:
         path: /etc/udev/rules.d/70-persistent-net.rules
         state: absent
-      tags: cleanup
+      tags: always
       ignore_errors: yes
 
-    # Delete machine-id and recreate symbolic link if needed
+    # ----- Delete machine-id and recreate symbolic link if needed -----
     - name: Truncate /etc/machine-id to zero length
-      copy:
+      ansible.builtin.copy:
         content: ""
         dest: /etc/machine-id
         owner: root
         group: root
         mode: "0644"
-      tags: cleanup
+      tags: always
 
     - name: Recreate /var/lib/dbus/machine-id symlink
-      file:
+      ansible.builtin.file:
         src: /etc/machine-id
         dest: /var/lib/dbus/machine-id
         state: link
-      tags: cleanup
+      tags: always
       ignore_errors: yes
 
-    # Clean apt database, orphan packages, and cloud-init state
+    # ----- Clean apt database, orphan packages, and cloud-init state -----
     - name: Clean the apt database
-      command: apt clean
-      tags: cleanup
+      ansible.builtin.command: apt clean
+      tags: always
 
     - name: Remove orphan packages
-      apt:
+      ansible.builtin.apt:
         autoremove: yes
         purge: yes
-      tags: cleanup
+      tags: always
 
-    - name: Clean cloud-init state (so clones re-run properly)
-      command: cloud-init clean
-      tags: cleanup
+    - name: Clean cloud-init state # so clones re-run properly
+      ansible.builtin.command: cloud-init clean --logs --seed
+      tags: always
 
-    # Shutdown the system (so you can convert to template in Proxmox)
+    # ----- Shutdown the system (so you can convert to template in Proxmox) -----
     - name: Shutdown the system
-      command: poweroff
+      ansible.builtin.command: poweroff
       async: 1
       poll: 0
-      tags: cleanup
+      tags: always
