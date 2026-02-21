@@ -19,7 +19,7 @@
         state: directory
         owner: "{{ owner_group }}"
         group: "{{ owner_group }}"
-        mode: "0755"
+        mode: "0750"
 
     - name: Import Docker Compose file
       ansible.builtin.copy:
@@ -27,7 +27,7 @@
         dest: "{{ dir_path }}/{{ compose_file }}"
         owner: "{{ owner_group }}"
         group: "{{ owner_group }}"
-        mode: "0644"
+        mode: "0640"
 
     - name: Import .env file
       ansible.builtin.copy:
@@ -35,7 +35,7 @@
         dest: "{{ dir_path }}/{{ env_file }}"
         owner: "{{ owner_group }}"
         group: "{{ owner_group }}"
-        mode: "0600"
+        mode: "0640"
 
     - name: Import configurations
       ansible.builtin.copy:
@@ -44,6 +44,13 @@
         owner: "{{ owner_group }}"
         group: "{{ owner_group }}"
         mode: preserve
+
+    - name: Ensure shell scripts are executable
+      ansible.builtin.file:
+        path: "{{ item }}"
+        mode: "0755"
+      with_fileglob:
+        - "{{ dir_path }}/{{ config_dir }}/**/*.sh"
 
     - name: Start Docker Compose stack
       ansible.builtin.command: >
