@@ -1,0 +1,168 @@
+# To deploy a Zabbix Proxy LXC using this playbook, run the following command from the directory containing this playbook and your Ansible inventory file.
+# Make sure to replace `YourSecurePassword` with a strong password for the Zabbix database user.
+#
+# ansible-playbook zabbix-proxy-lxc.yml -i inventory \
+#  -e "vault_zabbix_db_password=YourSecurePassword"
+
+---
+- name: Deploy Zabbix Proxy with PostgreSQL to Rocky 9 LXC
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    zabbix_version: "7.4"
+    zabbix_db_user: "zabbix"
+    zabbix_db_name: "zabbix_proxy"
+    zabbix_db_password: "{{ vault_zabbix_db_password | default('changeme') }}"
+
+  tasks:
+    - name: Update system packages
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+      tags: always
+
+    - name: Install dependencies
+      ansible.builtin.yum:
+        name:
+          - nano
+          - openssh-server
+          - epel-release
+        state: present
+      tags: always
+
+    - name: Install the PostgreSQL repository
+      ansible.builtin.yum:
+        name: https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+        state: present
+      tags: always
+    
+    - name: Install PostgreSQL client and server packages
+      ansible.builtin.yum:
+        name:
+          - postgresql18-server
+        state: present
+      tags: always
+
+    # ----- Zabbix Repository Setup -----
+    - name: Disable Zabbix packages from EPEL
+      ansible.builtin.lineinfile:
+        path: /etc/yum.repos.d/epel.repo
+        regexp: '^excludepkgs='
+        line: 'excludepkgs=zabbix*'
+        state: present
+      tags: always
+      ignore_errors: yes
+
+    - name: Install Zabbix Repository
+      ansible.builtin.shell: rpm -Uvh https://repo.zabbix.com/zabbix/{{ zabbix_version }}/release/rocky/9/noarch/zabbix-release-latest-{{ zabbix_version }}.el9.noarch.rpm
+      args:
+        creates: /etc/yum.repos.d/zabbix.repo
+      tags: always
+
+    - name: Clean DNF cache
+      ansible.builtin.shell: dnf clean all
+      changed_when: false
+      tags: always
+
+    # ----- Install Required Packages -----
+    - name: Install Zabbix Proxy and dependencies
+      ansible.builtin.yum:
+        name:
+          - zabbix-proxy-pgsql
+          - zabbix-sql-scripts
+          - zabbix-selinux-policy
+        state: present
+      tags: always
+
+    # ----- PostgreSQL Database Setup -----
+    - name: Install python3-psycopg2 for PostgreSQL module
+      ansible.builtin.yum:
+        name: python3-psycopg2
+        state: present
+      tags: always
+
+    - name: Create Zabbix PostgreSQL user
+      community.postgresql.postgresql_user:
+        name: "{{ zabbix_db_user }}"
+        password: "{{ zabbix_db_password }}"
+        encrypted: yes
+        state: present
+      become_user: postgres
+      tags: always
+
+    - name: Create Zabbix proxy database
+      community.postgresql.postgresql_db:
+        name: "{{ zabbix_db_name }}"
+        owner: "{{ zabbix_db_user }}"
+        state: present
+      become_user: postgres
+      tags: always
+
+    - name: Import Zabbix proxy schema and data
+      ansible.builtin.shell: cat /usr/share/zabbix/sql-scripts/postgresql/proxy.sql | sudo -u {{ zabbix_db_user }} psql {{ zabbix_db_name }}
+      environment:
+        PGPASSWORD: "{{ zabbix_db_password }}"
+      changed_when: false
+      tags: always
+
+    # ----- Zabbix Proxy Configuration -----
+    - name: Configure Zabbix proxy database password
+      ansible.builtin.lineinfile:
+        path: /etc/zabbix/zabbix_proxy.conf
+        regexp: '^# ?DBPassword='
+        line: 'DBPassword={{ zabbix_db_password }}'
+        state: present
+      tags: always
+
+    - name: Ensure DBHost is set for local PostgreSQL
+      ansible.builtin.lineinfile:
+        path: /etc/zabbix/zabbix_proxy.conf
+        regexp: '^# ?DBHost='
+        line: 'DBHost=localhost'
+        state: present
+      tags: always
+
+    - name: Ensure DBName is set correctly
+      ansible.builtin.lineinfile:
+        path: /etc/zabbix/zabbix_proxy.conf
+        regexp: '^# ?DBName='
+        line: 'DBName={{ zabbix_db_name }}'
+        state: present
+      tags: always
+
+    - name: Ensure DBUser is set correctly
+      ansible.builtin.lineinfile:
+        path: /etc/zabbix/zabbix_proxy.conf
+        regexp: '^# ?DBUser='
+        line: 'DBUser={{ zabbix_db_user }}'
+        state: present
+      tags: always
+
+    # ----- SELinux Policy -----
+    - name: Restore SELinux context for Zabbix directories
+      ansible.builtin.shell: restorecon -Rv /etc/zabbix/ /var/lib/zabbix/ /var/log/zabbix/ /var/run/zabbix/
+      changed_when: false
+      tags: always
+      ignore_errors: yes
+
+    # ----- Zabbix Proxy Service -----
+    - name: Enable Zabbix proxy service
+      ansible.builtin.systemd:
+        name: zabbix-proxy
+        enabled: yes
+      tags: always
+
+    - name: Start Zabbix proxy service
+      ansible.builtin.systemd:
+        name: zabbix-proxy
+        state: started
+      tags: always
+
+    - name: Verify Zabbix proxy is running
+      ansible.builtin.systemd:
+        name: zabbix-proxy
+      register: zabbix_proxy_status
+      failed_when: zabbix_proxy_status.status.ActiveState != "active"
+      tags: always
