@@ -1,0 +1,64 @@
+---
+- name: Create Mint Template After Manaual Configuration
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # Template cleanup
+    # -------------------------------------------------------------------------
+    - name: Find SSH host keys
+      find:
+        paths: /etc/ssh
+        patterns: "ssh_host_*"
+      register: ssh_keys
+
+    - name: Remove SSH host keys (regenerated on clone/boot)
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ ssh_keys.files }}"
+
+    - name: Remove root authorized_keys (optional; safer for generic template)
+      file:
+        path: /root/.ssh/authorized_keys
+        state: absent
+      ignore_errors: true
+
+    - name: Remove udev persistent net rules (prevents clone NIC weirdness)
+      file:
+        path: /etc/udev/rules.d/70-persistent-net.rules
+        state: absent
+      ignore_errors: true
+
+    - name: Truncate /etc/machine-id to zero length
+      copy:
+        content: ""
+        dest: /etc/machine-id
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Recreate /var/lib/dbus/machine-id symlink (ignore if not applicable)
+      file:
+        src: /etc/machine-id
+        dest: /var/lib/dbus/machine-id
+        state: link
+      ignore_errors: true
+
+    - name: Clean the apt database
+      command: apt clean
+
+    - name: Remove orphan packages
+      apt:
+        autoremove: true
+        purge: true
+
+    - name: Clean cloud-init state (so clones re-run properly)
+      command: cloud-init clean
+
+    - name: Shutdown the system (so you can convert to template in Proxmox)
+      command: poweroff
+      async: 1
+      poll: 0

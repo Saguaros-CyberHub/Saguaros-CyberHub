@@ -1,5 +1,5 @@
 ---
-- name: Forge Module Gateway Template
+- name: Lane Gateway Template
   hosts: all
   become: true
   gather_facts: true
@@ -9,38 +9,37 @@
     wan_if: "wan0"
     lan_if: "lan0"
 
-    # Module subnet (/16)
-    lan_cidr: "100.103.0.1/16"
-    lan_gw: "100.103.0.1"
-    lan_net: "100.103.0.0/16"
-    lan_pool_start: "100.103.0.100"
-    lan_pool_end: "100.103.255.254"
-    lan_netmask: "255.255.0.0"   # /16
+    # Lane subnet (/24)
+    lan_cidr: "192.18.0.1/24"
+    lan_gw: "192.18.0.1"
+    lan_net: "192.18.0.0/24"
+    lan_pool_start: "192.18.0.2"
+    lan_pool_end: "192.18.0.254"
+    lan_netmask: "255.255.255.0"   # /24
 
     # Management subnets (SSH troubleshooting access)
     mgmt_subnets:
-      - "100.100.10.0/24" # Management VLAN
       - "100.100.30.0/24" # Trusted VLAN
       - "10.0.254.0/24" # Admin VPN range
     mgmt_ssh_port: 22
 
     # DHCP/DNS model A: clients use gateway as DNS, gateway forwards upstream
-    # Module gateways get WAN DNS from DHCP and forward via /etc/resolv.conf
-    # Lanes get told to use the module gateway (100.103.0.1) as their DNS
-    upstream_dns: ""         # module gateway will use /etc/resolv.conf from WAN DHCP
-    dhcp_dns_servers: ["100.103.0.1"]    # lanes get module gateway as DNS
+    # For lanes, the gateway forwards to the module gateway (set via module_gateway_ip)
+    dhcp_dns_servers: ["192.18.0.1"]     # hand out gateway as DNS
     dhcp_lease_time: "12h"
 
-    # Module gateway coordination (prevent inter-module/inter-lane leakage)
-    # Forge gateway serves the 100.103 transit zone
-    module_gateway_ip: "100.103.0.1"    # this gateway's own management IP
-    transit_zone: "100.103.0.0/16"      # this module's transit zone (for blocking other lanes)
+    # Module gateway coordination (enforce lane isolation and service access)
+    # During instantiation, set these for the module hosting this lane
+    # These MUST be hardcoded per template (one template per module)
+    # Example for CyberLabs module: module_gateway_ip: "100.101.0.1", transit_zone: "100.101.0.0/16"
+    module_gateway_ip: "100.102.0.1"      # e.g., "100.101.0.1" | IP of module's management gateway
+    transit_zone: "100.102.0.0/16"           # e.g., "100.101.0.0/16" | module's transit zone CIDR
 
     # SIEM/logging export (optional)
-    siem_server: ""        # e.g., "100.102.20.50" (leave blank to disable forwarding) | will implement in a later version
+    siem_server: ""        # e.g., "192.18.20.50" (leave blank to disable forwarding) | will implement in a later version
     syslog_port: 514
 
-    # Anti-breakout for module hosts (block reaching internal/private ranges + mgmt subnets + other modules + lane)
+    # Anti-breakout for lane hosts (block reaching internal/private ranges + mgmt subnets + all module networks)
     blocked_cidrs:
       - "10.0.0.0/8"
       - "172.16.0.0/12"
@@ -49,14 +48,19 @@
       - "100.100.0.0/16"       # Management/Infrastructure networks
       - "100.101.0.0/16"       # CyberLabs module network
       - "100.102.0.0/16"       # Crucible module network
-      - "192.18.0.0/24"        # Lane network
+      - "100.103.0.0/16"       # Forge module network
       - "10.0.254.0/24"        # Admin VPN range
+
+    # Guacamole RDP server (for remote desktop access)
+    guac_server_ip: "100.100.70.10"           # e.g., "100.100.70.10" (leave blank to disable RDP forwarding)
 
     # Allowed outbound traffic from lane to uplink (NEW connections)
     allow_out_tcp_ports: [80, 443, 22]
+    allow_out_udp_ports: [123]
     allow_icmp_forward: true
-
     block_direct_dns_to_wan: true
+    block_direct_ntp_to_wan: true
+    allow_all_outbound_tcp: true
 
     # Persist iptables at /etc/iptables/rules-save
     iptables_rules_path: "/etc/iptables/rules-save"
@@ -75,23 +79,23 @@
 
   handlers:
     - name: restart dnsmasq
-      command: rc-service dnsmasq restart
+      ansible.builtin.command: rc-service dnsmasq restart
       failed_when: false
 
     - name: restart iptables
-      command: rc-service iptables restart
+      ansible.builtin.command: rc-service iptables restart
       failed_when: false
 
     - name: restart chrony
-      command: rc-service chronyd restart
+      ansible.builtin.command: rc-service chronyd restart
       failed_when: false
 
     - name: restart rsyslog
-      command: rc-service rsyslog restart
+      ansible.builtin.command: rc-service rsyslog restart
       failed_when: false
 
     - name: restart sshd
-      command: rc-service sshd restart
+      ansible.builtin.command: rc-service sshd restart
       failed_when: false
 
   tasks:
@@ -99,7 +103,7 @@
     # Base packages + services
     # -------------------------
     - name: Ensure required packages are installed
-      apk:
+      ansible.builtin.apk:
         name:
           - openrc
           - iptables
@@ -111,7 +115,7 @@
         update_cache: true
 
     - name: Enable services at boot (OpenRC)
-      command: rc-update add {{ item }} default
+      ansible.builtin.command: rc-update add {{ item }} default
       register: rcupdate_out
       changed_when: "'added to runlevel default' in rcupdate_out.stdout"
       failed_when: false
@@ -124,13 +128,13 @@
 
     # sysctl is a boot-time service on Alpine; enabling it ensures ip_forward persists across clones/reboots
     - name: Enable sysctl at boot (OpenRC)
-      command: rc-update add sysctl boot
+      ansible.builtin.command: rc-update add sysctl boot
       register: rcupdate_sysctl
       changed_when: "'added to runlevel boot' in rcupdate_sysctl.stdout"
       failed_when: false
 
     - name: Ensure SSHD is started (so Ansible doesn't lock itself out mid-run)
-      command: rc-service sshd start
+      ansible.builtin.command: rc-service sshd start
       register: sshd_start
       changed_when: "'started' in sshd_start.stdout or 'Starting' in sshd_start.stdout"
       failed_when: false
@@ -139,7 +143,7 @@
     # Sysctl & SSH hardening
     # -------------------------
     - name: Enable IPv4 forwarding and disable IPv6 (sysctl.conf)
-      blockinfile:
+      ansible.builtin.blockinfile:
         path: /etc/sysctl.conf
         create: true
         marker: "# {mark} ANSIBLE GATEWAY SYSCTL"
@@ -149,16 +153,24 @@
           net.ipv6.conf.default.disable_ipv6=1
 
     - name: Apply sysctl settings
-      command: sysctl -p
-      changed_when: true
+      ansible.builtin.command: sysctl -p
+      changed_when: false
 
     # Extra safety: set it live in case the container boots without applying sysctl.conf
     - name: Ensure IPv4 forwarding is active now
-      command: sysctl -w net.ipv4.ip_forward=1
+      ansible.builtin.command: sysctl -w net.ipv4.ip_forward=1
       changed_when: false
 
+    - name: Assert required lane module routing variables are provided
+      ansible.builtin.assert:
+        that:
+          - module_gateway_ip | trim | length > 0
+          - transit_zone | trim | length > 0
+        fail_msg: "Lane deployment requires module_gateway_ip and transit_zone to be set (one template per module)."
+        success_msg: "Required lane module routing variables are set."
+
     - name: Harden SSH daemon (key-only access)
-      blockinfile:
+      ansible.builtin.blockinfile:
         path: /etc/ssh/sshd_config
         create: false
         marker: "# {mark} ANSIBLE GATEWAY SSH HARDENING"
@@ -173,13 +185,13 @@
     # LAN interface addressing
     # -------------------------
     - name: Check if lan0 already has correct address
-      command: ip addr show dev {{ lan_if }}
+      ansible.builtin.command: ip addr show dev {{ lan_if }}
       register: lan_addr_check
       changed_when: false
       failed_when: false
 
-    - name: Ensure lan0 has the correct /28 address (idempotent)
-      shell: |
+    - name: Ensure lan0 has the correct /24 address (idempotent)
+      ansible.builtin.shell: |
         set -e
         ip -4 addr flush dev {{ lan_if }}
         ip addr add {{ lan_cidr }} dev {{ lan_if }}
@@ -188,18 +200,34 @@
         executable: /bin/sh
       when: lan_cidr not in lan_addr_check.stdout
 
+    - name: Persist WAN/LAN interface config across reboot (Alpine ifupdown)
+      ansible.builtin.blockinfile:
+        path: /etc/network/interfaces
+        create: true
+        marker: "# {mark} ANSIBLE GATEWAY INTERFACES"
+        block: |
+          auto lo
+          iface lo inet loopback
+
+          auto {{ wan_if }}
+          iface {{ wan_if }} inet dhcp
+
+          auto {{ lan_if }}
+          iface {{ lan_if }} inet static
+            address {{ lan_gw }}
+            netmask {{ lan_netmask }}
 
     # -------------------------
     # WAN interface addressing (DHCP)
     # -------------------------
     - name: Check if wan0 already has an IPv4 address
-      command: ip -4 addr show dev {{ wan_if }}
+      ansible.builtin.command: ip -4 addr show dev {{ wan_if }}
       register: wan_addr_check
       changed_when: false
       failed_when: false
 
     - name: Bring up wan0 and request DHCP if missing
-      shell: |
+      ansible.builtin.shell: |
         set -e
         ip link set {{ wan_if }} up
         if ! ip -4 addr show dev {{ wan_if }} | grep -q "inet "; then
@@ -214,27 +242,28 @@
     # dnsmasq (DHCP + gateway-controlled DNS forwarding)
     # -------------------------
     - name: Ensure dnsmasq.d exists
-      file:
+      ansible.builtin.file:
         path: "{{ dnsmasq_dropin_dir }}"
         state: directory
         mode: "0755"
 
     - name: Ensure dnsmasq.conf includes dnsmasq.d drop-ins
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/dnsmasq.conf
         line: "conf-dir={{ dnsmasq_dropin_dir }},*.conf"
         create: true
         state: present
 
     - name: Remove legacy lane directives from /etc/dnsmasq.conf (prevent duplicates)
-      replace:
+      ansible.builtin.replace:
         path: /etc/dnsmasq.conf
         regexp: '^(interface|bind-interfaces|dhcp-range|dhcp-option|dhcp-leasefile|no-resolv|server|log-dhcp|local-service)(=|\s).*$'
         replace: ''
       notify: restart dnsmasq
       failed_when: false
+
     - name: Install dnsmasq config (drop-in)
-      copy:
+      ansible.builtin.copy:
         dest: "{{ dnsmasq_dropin_file }}"
         owner: root
         group: root
@@ -249,9 +278,9 @@
           dhcp-option=6,{{ dhcp_dns_servers | join(',') }}
 
           # Gateway forwards upstream (scenario control)
-          {% if upstream_dns %}
+          {% if module_gateway_ip %}
           no-resolv
-          server={{ upstream_dns }}
+          server={{ module_gateway_ip }}
           {% endif %}
 
           # Hygiene + logs
@@ -261,11 +290,11 @@
       notify: restart dnsmasq
 
     - name: Validate dnsmasq config before starting/restarting
-      command: dnsmasq --test
+      ansible.builtin.command: dnsmasq --test
       changed_when: false
 
     - name: Check wan0 has IP before starting dnsmasq (safety check)
-      shell: |
+      ansible.builtin.shell: |
         set -e
         attempt=0
         max_attempts=30
@@ -282,12 +311,12 @@
         executable: /bin/sh
 
     - name: Validate upstream DNS reachable (if configured)
-      command: ping -c 1 -w 5 {{ upstream_dns }}
-      when: upstream_dns
+      ansible.builtin.command: ping -c 1 -w 5 {{ module_gateway_ip }}
+      when: module_gateway_ip != ""
       failed_when: false
 
     - name: Ensure dnsmasq is started
-      command: rc-service dnsmasq start
+      ansible.builtin.command: rc-service dnsmasq start
       register: dnsmasq_start
       changed_when: "'started' in dnsmasq_start.stdout or 'Starting' in dnsmasq_start.stdout"
       failed_when: false
@@ -296,7 +325,7 @@
     # Time synchronization (chrony)
     # -------------------------
     - name: Configure chrony for NTP
-      blockinfile:
+      ansible.builtin.blockinfile:
         path: "{{ chrony_conf_path }}"
         create: true
         marker: "# {mark} ANSIBLE GATEWAY NTP CONFIG"
@@ -312,7 +341,7 @@
       notify: restart chrony
 
     - name: Ensure chrony is started
-      command: rc-service chronyd start
+      ansible.builtin.command: rc-service chronyd start
       register: chrony_start
       changed_when: "'started' in chrony_start.stdout or 'Starting' in chrony_start.stdout"
       failed_when: false
@@ -321,14 +350,14 @@
     # Logging/SIEM export (rsyslog) - optional
     # -------------------------
     - name: Ensure rsyslog drop-in directory exists
-      file:
+      ansible.builtin.file:
         path: "{{ rsyslog_dropin_dir }}"
         state: directory
         mode: "0755"
 
     # Avoid the LXC /proc/kmsg spam (non-fatal but annoying)
     - name: Disable kernel log input in rsyslog for LXC (avoid /proc/kmsg permission errors)
-      copy:
+      ansible.builtin.copy:
         dest: "{{ rsyslog_dropin_dir }}/01-lxc-no-kmsg.conf"
         owner: root
         group: root
@@ -341,7 +370,7 @@
       failed_when: false
 
     - name: Configure rsyslog with conditional SIEM export (drop-in)
-      copy:
+      ansible.builtin.copy:
         dest: "{{ rsyslog_dropin_file }}"
         owner: root
         group: root
@@ -354,7 +383,7 @@
       notify: restart rsyslog
 
     - name: Ensure rsyslog is started
-      command: rc-service rsyslog start
+      ansible.builtin.command: rc-service rsyslog start
       register: rsyslog_start
       changed_when: "'started' in rsyslog_start.stdout or 'Starting' in rsyslog_start.stdout"
       failed_when: false
@@ -362,94 +391,97 @@
     # -------------------------
     # iptables rules (golden state)
     # -------------------------
-    - name: Build iptables rules-save content
-      set_fact:
-        iptables_rules_save: |
+    - name: Ensure /etc/iptables exists
+      ansible.builtin.file:
+        path: /etc/iptables
+        state: directory
+        mode: "0755"
+
+    - name: Install persistent iptables rules-save
+      ansible.builtin.copy:
+        dest: "{{ iptables_rules_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
           *filter
           :INPUT DROP [0:0]
           :FORWARD DROP [0:0]
           :OUTPUT ACCEPT [0:0]
-
-          # --- INPUT (router local) ---
           -A INPUT -i lo -j ACCEPT
           -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-          # DHCP + DNS for lane clients (to the gateway)
           -A INPUT -i {{ lan_if }} -p udp --dport 67:68 -j ACCEPT
           -A INPUT -i {{ lan_if }} -p udp --dport 53 -j ACCEPT
           -A INPUT -i {{ lan_if }} -p tcp --dport 53 -j ACCEPT
-
-          # Allow clients to query time (NTP)
           -A INPUT -i {{ lan_if }} -p udp --dport 123 -j ACCEPT
-
-          # Allow clients to ping the gateway
           -A INPUT -i {{ lan_if }} -p icmp --icmp-type echo-request -j ACCEPT
-
-          # Management SSH access from trusted subnets (WAN-side only)
           {% for mgmt_subnet in mgmt_subnets %}
           -A INPUT -i {{ wan_if }} -s {{ mgmt_subnet }} -p tcp --dport {{ mgmt_ssh_port }} -m conntrack --ctstate NEW -j ACCEPT
           {% endfor %}
-
-          # --- FORWARD (lane routing) ---
+          # --- FORWARD (traffic routed through the lane gateway) ---
+          # Allow return traffic
           -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-          # Anti-breakout: block internal/private ranges first
+          # Specific forwarded exception(s) that must come before anti-breakout drops
+          {% if module_gateway_ip %}
+          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p udp -m multiport --dports 53,123 -m conntrack --ctstate NEW -j ACCEPT
+          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p tcp --dport 53 -m conntrack --ctstate NEW -j ACCEPT
+          {% endif %}
+          {% if guac_server_ip %}
+          -A FORWARD -i {{ lan_if }} -d {{ guac_server_ip }} -p tcp --dport 3389 -m conntrack --ctstate NEW -j ACCEPT
+          {% endif %}
+
+          # Anti-breakout: block internal/private/infrastructure destinations first
           {% for cidr in blocked_cidrs %}
           -A FORWARD -i {{ lan_if }} -d {{ cidr }} -j DROP
           {% endfor %}
 
-          {% if block_direct_dns_to_wan %}
-          # Prevent DNS bypass: block lane clients from talking to WAN DNS directly
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp --dport 53 -j REJECT --reject-with icmp-port-unreachable
-          {% endif %}
-
-          # Lane isolation: allow DNS/NTP to module gateway only
-          {% if module_gateway_ip %}
-          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p udp -m multiport --dports 53,123 -j ACCEPT
-          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p tcp --dport 53 -j ACCEPT
-          {% endif %}
-
-          # Lane isolation: block all other hosts in transit zone (prevent lane-to-lane access)
+          # Block forwarded access to other hosts in this module transit zone
           {% if transit_zone %}
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -d {{ transit_zone }} ! -d {{ module_gateway_ip }} -j DROP
+          -A FORWARD -i {{ lan_if }} -d {{ transit_zone }} -j DROP
           {% endif %}
 
-          # Allow NEW outbound from lane -> WAN (restricted ports)
+          # Prevent DNS bypass: lane clients must use this lane gateway DNS
+          {% if block_direct_dns_to_wan %}
+          -A FORWARD -i {{ lan_if }} -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+          -A FORWARD -i {{ lan_if }} -p tcp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+          {% endif %}
+
+          # Prevent NTP bypass: lane clients must use this lane gateway for time
+          {% if block_direct_ntp_to_wan %}
+          -A FORWARD -i {{ lan_if }} -p udp --dport 123 -j REJECT --reject-with icmp-port-unreachable
+          {% endif %}
+
+          # General internet egress from lane -> WAN
+          {% if allow_all_outbound_tcp %}
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp -m conntrack --ctstate NEW -j ACCEPT
+          {% else %}
           {% for p in allow_out_tcp_ports %}
           -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp --dport {{ p }} -m conntrack --ctstate NEW -j ACCEPT
           {% endfor %}
-
-          {% if allow_icmp_forward %}
-          -A FORWARD -p icmp -j ACCEPT
           {% endif %}
 
-          # Explicitly block inbound from WAN -> LAN
+          {% if allow_icmp_forward %}
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p icmp -m conntrack --ctstate NEW -j ACCEPT
+          {% endif %}
+
+          {% for p in allow_out_udp_ports %}
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p udp --dport {{ p }} -m conntrack --ctstate NEW -j ACCEPT
+          {% endfor %}
+
+          # No unsolicited inbound WAN -> LAN
           -A FORWARD -i {{ wan_if }} -o {{ lan_if }} -j DROP
-
-          # UDP egress (NTP, DNS replies via ESTABLISHED, ephemeral responses)
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p udp -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
-
-          # TCP egress is limited to specific ports (defined above in allow_out_tcp_ports)
-          # All other traffic to WAN defaults to DROP (implicit)
-
-          # --- OUTPUT (gateway itself) ---
-          # Allow gateway to send syslog to SIEM (if configured)
           {% if siem_server %}
           -A OUTPUT -o {{ wan_if }} -d {{ siem_server }} -p tcp --dport {{ syslog_port }} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
           {% endif %}
-
           COMMIT
-
           *nat
           :PREROUTING ACCEPT [0:0]
           :INPUT ACCEPT [0:0]
           :OUTPUT ACCEPT [0:0]
           :POSTROUTING ACCEPT [0:0]
-          # NAT only the lane subnet out the uplink
           -A POSTROUTING -s {{ lan_net }} -o {{ wan_if }} -j MASQUERADE
           COMMIT
-
           *mangle
           :PREROUTING ACCEPT [0:0]
           :INPUT ACCEPT [0:0]
@@ -460,23 +492,26 @@
           -A FORWARD -i {{ wan_if }} -o {{ lan_if }} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
           COMMIT
 
-    - name: Ensure /etc/iptables exists
-      file:
-        path: /etc/iptables
-        state: directory
-        mode: "0755"
+    - name: Flush existing iptables rules (filter, nat, mangle tables)
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - iptables -F
+        - iptables -F -t nat
+        - iptables -F -t mangle
+        - iptables -X
+        - iptables -X -t nat
+        - iptables -X -t mangle
+      changed_when: false
+      failed_when: false
 
-    - name: Install persistent iptables rules-save
-      copy:
-        dest: "{{ iptables_rules_path }}"
-        content: "{{ iptables_rules_save }}"
-        owner: root
-        group: root
-        mode: "0600"
-      notify: restart iptables
+    - name: Load iptables rules from rules-save file (iptables-restore)
+      ansible.builtin.shell: iptables-restore < "{{ iptables_rules_path }}"
+      args:
+        executable: /bin/sh
+      changed_when: false
 
     - name: Ensure iptables service is restarted (reloads rules-save)
-      command: rc-service iptables restart
+      ansible.builtin.command: rc-service iptables restart
       register: iptables_restart
       changed_when: "'restarted' in iptables_restart.stdout or 'Restarting' in iptables_restart.stdout or 'started' in iptables_restart.stdout"
       failed_when: false
@@ -485,25 +520,25 @@
     # Sanity checks (non-fatal)
     # -------------------------
     - name: Show interface summary
-      command: ip addr show
+      ansible.builtin.command: ip addr show
       register: ip_show
       changed_when: false
       failed_when: false
 
     - name: Show dnsmasq status
-      command: rc-service dnsmasq status
+      ansible.builtin.command: rc-service dnsmasq status
       register: dnsmasq_status
       changed_when: false
       failed_when: false
 
     - name: Show iptables FORWARD summary
-      command: iptables -L FORWARD -n -v
+      ansible.builtin.command: iptables -L FORWARD -n -v
       register: ipt_fwd
       changed_when: false
       failed_when: false
 
     - name: Print summaries
-      debug:
+      ansible.builtin.debug:
         msg:
           - "{{ ip_show.stdout | default('ip addr show unavailable') }}"
           - "{{ dnsmasq_status.stdout | default('dnsmasq status unavailable') }}"
@@ -520,12 +555,12 @@
     # Pre-template cleanup
     # -------------------------
     - name: Stop services for cleanup
-      command: rc-service {{ item }} stop
+      ansible.builtin.command: rc-service {{ item }} stop
       loop: [dnsmasq, rsyslog, chronyd]
       failed_when: false
 
     - name: Remove dnsmasq leases
-      file:
+      ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
@@ -534,7 +569,7 @@
       failed_when: false
 
     - name: Truncate common logs
-      shell: |
+      ansible.builtin.shell: |
         set -e
         for f in /var/log/messages /var/log/syslog /var/log/dnsmasq.log /var/log/firewall.log; do
           [ -f "$f" ] && : > "$f" || true
@@ -543,7 +578,7 @@
         executable: /bin/sh
 
     - name: Remove SSH host keys (regen on first boot)
-      file:
+      ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       with_fileglob:
@@ -551,7 +586,7 @@
       failed_when: false
 
     - name: Clear shell history and login records
-      file:
+      ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
@@ -562,7 +597,7 @@
       failed_when: false
 
     - name: Remove machine-id if present
-      file:
+      ansible.builtin.file:
         path: /etc/machine-id
         state: absent
       failed_when: false
@@ -571,7 +606,7 @@
     # Final shutdown for templating
     # -------------------------
     - name: Cleanly shutdown container for templating
-      command: /sbin/shutdown -h now
+      ansible.builtin.command: /sbin/shutdown -h now
       async: 10
       poll: 0
       changed_when: true

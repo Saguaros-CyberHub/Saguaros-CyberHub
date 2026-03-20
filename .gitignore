@@ -14,7 +14,7 @@ tempCodeRunnerFile.sh
 *.bkp
 *.backup
 .cybercore-backup/
-./infrastructure/proxmox-templates/template-inventory.ini
+**/template-inventory.ini
 data/
 
 # Added for install.sh

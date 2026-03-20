@@ -1,7 +1,9 @@
 ---
-- name: Create ideal Debian 13.2 Proxmox base template (passthrough + vGPU ready)
+- name: Create ideal Mint 13.2 Proxmox base template (passthrough + vGPU ready)
   hosts: all
   become: true
+  gather_facts: true
+
   vars:
     trusted_ssh_subnets:
       - 100.64.10.0/24
@@ -65,20 +67,16 @@
           - pkg-config
           - libglvnd0
           - libglvnd-dev
-          # Prefer exact headers, but this can fail if that exact version isn't in repo
-          - "linux-headers-{{ ansible_kernel }}"
+          - "linux-headers-{{ ansible_facts['kernel'] }}" # Prefer exact headers, but this can fail if that exact version isn't in repo
         state: present
         update_cache: true
       register: headers_install
       ignore_errors: true
       tags: always
 
-    - name: Fallback - install generic Debian headers meta-package if exact headers missing
-      apt:
-        name:
-          - linux-headers-amd64
-        state: present
-        update_cache: true
+    - name: Fallback - skip if exact headers unavailable (okay for base template)
+      debug:
+        msg: "Exact kernel headers unavailable, but template will still work"
       when: headers_install is failed
       tags: always
 
@@ -187,6 +185,39 @@
         content: |
           ssh_pwauth: false
           disable_root: true
+      tags: always
+
+    - name: Create SSH key regeneration systemd service (runs on first boot if keys missing)
+      copy:
+        dest: /etc/systemd/system/ssh-keygen-first-boot.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Generate SSH host keys on first boot if missing
+          Before=ssh.service
+          ConditionPathExists=!/etc/ssh/ssh_host_rsa_key
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/ssh-keygen -A
+          RemainAfterExit=yes
+          StandardOutput=journal
+
+          [Install]
+          WantedBy=multi-user.target
+      tags: always
+
+    - name: Reload systemd daemon to register new service
+      systemd:
+        daemon_reload: true
+      tags: always
+
+    - name: Enable SSH key regeneration service
+      systemd:
+        name: ssh-keygen-first-boot.service
+        enabled: true
       tags: always
 
     - name: Restart SSH to apply config changes

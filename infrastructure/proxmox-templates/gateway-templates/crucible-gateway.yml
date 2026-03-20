@@ -1,5 +1,5 @@
 ---
-- name: Lane Gateway Template
+- name: Crucible Module Gateway Template
   hosts: all
   become: true
   gather_facts: true
@@ -9,38 +9,36 @@
     wan_if: "wan0"
     lan_if: "lan0"
 
-    # Lane subnet (/28)
-    lan_cidr: "192.18.0.1/24"
-    lan_gw: "192.18.0.1"
-    lan_net: "192.18.0.0/24"
-    lan_pool_start: "192.18.0.2"
-    lan_pool_end: "192.18.0.254"
-    lan_netmask: "255.255.255.0"   # /24
+    # Module subnet (/16)
+    lan_cidr: "100.102.0.1/16"
+    lan_gw: "100.102.0.1"
+    lan_net: "100.102.0.0/16"
+    lan_pool_start: "100.102.0.10"
+    lan_pool_end: "100.102.255.254"
+    lan_netmask: "255.255.0.0"   # /16
 
     # Management subnets (SSH troubleshooting access)
     mgmt_subnets:
-      - "100.100.10.0/24" # Management VLAN
       - "100.100.30.0/24" # Trusted VLAN
       - "10.0.254.0/24" # Admin VPN range
     mgmt_ssh_port: 22
 
     # DHCP/DNS model A: clients use gateway as DNS, gateway forwards upstream
-    # For lanes, this should point to their hosting module's gateway IP (e.g. 100.101.0.1)
-    upstream_dns: ""           # e.g., "100.101.0.1" | set during instantiation (module gateway IP)
-    dhcp_dns_servers: ["192.18.0.1"]     # hand out gateway as DNS
+    # Module gateways get WAN DNS from DHCP and forward via /etc/resolv.conf
+    # Lanes get told to use the module gateway (100.102.0.1) as their DNS
+    dhcp_dns_servers: ["100.102.0.1"]    # lanes get module gateway as DNS
     dhcp_lease_time: "12h"
 
-    # Module gateway coordination (enforce lane isolation and service access)
-    # During instantiation, set these for the module hosting this lane
-    # Example for CyberLabs module: module_gateway_ip: "100.101.0.1", transit_zone: "100.101.0.0/16"
-    module_gateway_ip: ""      # e.g., "100.101.0.1" | IP of module's management gateway
-    transit_zone: ""           # e.g., "100.101.0.0/16" | module's transit zone CIDR
+    # Module gateway coordination (prevent inter-module/inter-lane leakage)
+    # Crucible gateway serves the 100.102 transit zone
+    module_gateway_ip: "100.102.0.1"    # this gateway's own management IP
+    transit_zone: "100.102.0.0/16"      # this module's transit zone (for blocking other lanes)
 
     # SIEM/logging export (optional)
-    siem_server: ""        # e.g., "192.18.20.50" (leave blank to disable forwarding) | will implement in a later version
+    siem_server: ""        # e.g., "100.102.20.50" (leave blank to disable forwarding) | will implement in a later version
     syslog_port: 514
 
-    # Anti-breakout for lane hosts (block reaching internal/private ranges + mgmt subnets + all module networks)
+    # Anti-breakout for module hosts (block reaching internal/private ranges + mgmt subnets + other modules + lane)
     blocked_cidrs:
       - "10.0.0.0/8"
       - "172.16.0.0/12"
@@ -48,15 +46,20 @@
       - "100.64.0.0/10"        # CGNAT range
       - "100.100.0.0/16"       # Management/Infrastructure networks
       - "100.101.0.0/16"       # CyberLabs module network
-      - "100.102.0.0/16"       # Crucible module network
       - "100.103.0.0/16"       # Forge module network
+      - "192.18.0.0/24"        # Lane network
       - "10.0.254.0/24"        # Admin VPN range
-  
+
+    # Guacamole RDP server (for remote desktop access)
+    guac_server_ip: "100.100.70.10"           # e.g., "100.100.50.10" (leave blank to disable RDP forwarding)
+
     # Allowed outbound traffic from lane to uplink (NEW connections)
     allow_out_tcp_ports: [80, 443, 22]
+    allow_out_udp_ports: [123]
     allow_icmp_forward: true
-
     block_direct_dns_to_wan: true
+    block_direct_ntp_to_wan: true
+    allow_all_outbound_tcp: true
 
     # Persist iptables at /etc/iptables/rules-save
     iptables_rules_path: "/etc/iptables/rules-save"
@@ -150,7 +153,7 @@
 
     - name: Apply sysctl settings
       command: sysctl -p
-      changed_when: true
+      changed_when: false
 
     # Extra safety: set it live in case the container boots without applying sysctl.conf
     - name: Ensure IPv4 forwarding is active now
@@ -178,7 +181,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Ensure lan0 has the correct /28 address (idempotent)
+    - name: Ensure lan0 has the correct /16 address (idempotent)
       shell: |
         set -e
         ip -4 addr flush dev {{ lan_if }}
@@ -187,6 +190,44 @@
       args:
         executable: /bin/sh
       when: lan_cidr not in lan_addr_check.stdout
+
+    - name: Persist WAN/LAN interface config across reboot (Alpine ifupdown)
+      blockinfile:
+        path: /etc/network/interfaces
+        create: true
+        marker: "# {mark} ANSIBLE GATEWAY INTERFACES"
+        block: |
+          auto lo
+          iface lo inet loopback
+
+          auto {{ wan_if }}
+          iface {{ wan_if }} inet dhcp
+
+          auto {{ lan_if }}
+          iface {{ lan_if }} inet static
+            address {{ lan_gw }}
+            netmask {{ lan_netmask }}
+
+    # -------------------------
+    # WAN interface addressing (DHCP)
+    # -------------------------
+    - name: Check if wan0 already has an IPv4 address
+      command: ip -4 addr show dev {{ wan_if }}
+      register: wan_addr_check
+      changed_when: false
+      failed_when: false
+
+    - name: Bring up wan0 and request DHCP if missing
+      shell: |
+        set -e
+        ip link set {{ wan_if }} up
+        if ! ip -4 addr show dev {{ wan_if }} | grep -q "inet "; then
+          # BusyBox udhcpc is present by default on Alpine
+          udhcpc -i {{ wan_if }} -q -n -t 5 || true
+        fi
+      args:
+        executable: /bin/sh
+      when: '"inet " not in wan_addr_check.stdout'
 
     # -------------------------
     # dnsmasq (DHCP + gateway-controlled DNS forwarding)
@@ -226,11 +267,8 @@
           dhcp-option=3,{{ lan_gw }}
           dhcp-option=6,{{ dhcp_dns_servers | join(',') }}
 
-          # Gateway forwards upstream (scenario control)
-          {% if upstream_dns %}
-          no-resolv
-          server={{ upstream_dns }}
-          {% endif %}
+          # Use WAN DHCP resolvers from /etc/resolv.conf
+          # (no-resolv and server= omitted to prevent self-referential DNS loop)
 
           # Hygiene + logs
           domain-needed
@@ -259,10 +297,12 @@
       args:
         executable: /bin/sh
 
-    - name: Validate upstream DNS reachable (if configured)
-      command: ping -c 1 -w 5 {{ upstream_dns }}
-      when: upstream_dns
-      failed_when: false
+    - name: Validate upstream DNS resolvers exist (from WAN DHCP)
+      shell: |
+        grep -qE '^[[:space:]]*nameserver[[:space:]]+[0-9]+\.' /etc/resolv.conf
+      args:
+        executable: /bin/sh
+      changed_when: false
 
     - name: Ensure dnsmasq is started
       command: rc-service dnsmasq start
@@ -340,9 +380,19 @@
     # -------------------------
     # iptables rules (golden state)
     # -------------------------
-    - name: Build iptables rules-save content
-      set_fact:
-        iptables_rules_save: |
+    - name: Ensure /etc/iptables exists
+      file:
+        path: /etc/iptables
+        state: directory
+        mode: "0755"
+
+    - name: Install persistent iptables rules-save
+      copy:
+        dest: "{{ iptables_rules_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
           *filter
           :INPUT DROP [0:0]
           :FORWARD DROP [0:0]
@@ -368,48 +418,55 @@
           -A INPUT -i {{ wan_if }} -s {{ mgmt_subnet }} -p tcp --dport {{ mgmt_ssh_port }} -m conntrack --ctstate NEW -j ACCEPT
           {% endfor %}
 
-          # --- FORWARD (lane routing) ---
+          # --- FORWARD (traffic routed through the transit gateway) ---
+          # Allow return traffic
           -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-          # Anti-breakout: block internal/private ranges first
+          # Specific forwarded exception(s) that must come before anti-breakout drops
+          {% if guac_server_ip %}
+          -A FORWARD -i {{ lan_if }} -d {{ guac_server_ip }} -p tcp --dport 3389 -m conntrack --ctstate NEW -j ACCEPT
+          {% endif %}
+
+          # Anti-breakout: block internal/private/infrastructure destinations first
           {% for cidr in blocked_cidrs %}
           -A FORWARD -i {{ lan_if }} -d {{ cidr }} -j DROP
           {% endfor %}
 
-          {% if block_direct_dns_to_wan %}
-          # Prevent DNS bypass: block lane clients from talking to WAN DNS directly
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp --dport 53 -j REJECT --reject-with icmp-port-unreachable
-          {% endif %}
-
-          # Lane isolation: allow DNS/NTP to module gateway only
-          {% if module_gateway_ip %}
-          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p udp -m multiport --dports 53,123 -j ACCEPT
-          -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p tcp --dport 53 -j ACCEPT
-          {% endif %}
-
-          # Lane isolation: block all other hosts in transit zone (prevent lane-to-lane access)
+          # Block forwarded access to other hosts in this module transit zone
           {% if transit_zone %}
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -d {{ transit_zone }} ! -d {{ module_gateway_ip }} -j DROP
+          -A FORWARD -i {{ lan_if }} -d {{ transit_zone }} -j DROP
           {% endif %}
 
-          # Allow NEW outbound from lane -> WAN (restricted ports)
+          # Prevent DNS bypass: lane gateways/clients must use the transit gateway for DNS
+          {% if block_direct_dns_to_wan %}
+          -A FORWARD -i {{ lan_if }} -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+          -A FORWARD -i {{ lan_if }} -p tcp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+          {% endif %}
+
+          # Prevent NTP bypass: lane gateways/clients must use the transit gateway for time
+          {% if block_direct_ntp_to_wan %}
+          -A FORWARD -i {{ lan_if }} -p udp --dport 123 -j REJECT --reject-with icmp-port-unreachable
+          {% endif %}
+
+          # General internet egress from lane -> WAN
+          {% if allow_all_outbound_tcp %}
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp -m conntrack --ctstate NEW -j ACCEPT
+          {% else %}
           {% for p in allow_out_tcp_ports %}
           -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p tcp --dport {{ p }} -m conntrack --ctstate NEW -j ACCEPT
           {% endfor %}
-
-          {% if allow_icmp_forward %}
-          -A FORWARD -p icmp -j ACCEPT
           {% endif %}
 
-          # Explicitly block inbound from WAN -> LAN
+          {% if allow_icmp_forward %}
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p icmp -m conntrack --ctstate NEW -j ACCEPT
+          {% endif %}
+
+          {% for p in allow_out_udp_ports %}
+          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p udp --dport {{ p }} -m conntrack --ctstate NEW -j ACCEPT
+          {% endfor %}
+
+          # No unsolicited inbound WAN -> LAN
           -A FORWARD -i {{ wan_if }} -o {{ lan_if }} -j DROP
-
-          # UDP egress (NTP, DNS replies via ESTABLISHED, ephemeral responses)
-          -A FORWARD -i {{ lan_if }} -o {{ wan_if }} -p udp -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
-
-          # TCP egress is limited to specific ports (defined above in allow_out_tcp_ports)
-          # All other traffic to WAN defaults to DROP (implicit)
 
           # --- OUTPUT (gateway itself) ---
           # Allow gateway to send syslog to SIEM (if configured)
@@ -438,20 +495,23 @@
           -A FORWARD -i {{ wan_if }} -o {{ lan_if }} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
           COMMIT
 
-    - name: Ensure /etc/iptables exists
-      file:
-        path: /etc/iptables
-        state: directory
-        mode: "0755"
+    - name: Flush existing iptables rules (filter, nat, mangle tables)
+      command: "{{ item }}"
+      loop:
+        - iptables -F
+        - iptables -F -t nat
+        - iptables -F -t mangle
+        - iptables -X
+        - iptables -X -t nat
+        - iptables -X -t mangle
+      changed_when: false
+      failed_when: false
 
-    - name: Install persistent iptables rules-save
-      copy:
-        dest: "{{ iptables_rules_path }}"
-        content: "{{ iptables_rules_save }}"
-        owner: root
-        group: root
-        mode: "0600"
-      notify: restart iptables
+    - name: Load iptables rules from rules-save file (iptables-restore)
+      shell: iptables-restore < "{{ iptables_rules_path }}"
+      args:
+        executable: /bin/sh
+      changed_when: false
 
     - name: Ensure iptables service is restarted (reloads rules-save)
       command: rc-service iptables restart
@@ -486,71 +546,3 @@
           - "{{ ip_show.stdout | default('ip addr show unavailable') }}"
           - "{{ dnsmasq_status.stdout | default('dnsmasq status unavailable') }}"
           - "{{ ipt_fwd.stdout | default('iptables output unavailable') }}"
-
-    # -------------------------
-    # IMPORTANT: flush handlers BEFORE cleanup
-    # (prevents "restart dnsmasq" from firing after you stop it)
-    # -------------------------
-    - name: Flush handlers before cleanup
-      meta: flush_handlers
-
-    # -------------------------
-    # Pre-template cleanup
-    # -------------------------
-    - name: Stop services for cleanup
-      command: rc-service {{ item }} stop
-      loop: [dnsmasq, rsyslog, chronyd]
-      failed_when: false
-
-    - name: Remove dnsmasq leases
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ dnsmasq_leasefile }}"
-        - "{{ dnsmasq_leasefile }}.old"
-      failed_when: false
-
-    - name: Truncate common logs
-      shell: |
-        set -e
-        for f in /var/log/messages /var/log/syslog /var/log/dnsmasq.log /var/log/firewall.log; do
-          [ -f "$f" ] && : > "$f" || true
-        done
-      args:
-        executable: /bin/sh
-
-    - name: Remove SSH host keys (regen on first boot)
-      file:
-        path: "{{ item }}"
-        state: absent
-      with_fileglob:
-        - /etc/ssh/ssh_host_*key*
-      failed_when: false
-
-    - name: Clear shell history and login records
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /root/.ash_history
-        - /root/.bash_history
-        - /var/log/wtmp
-        - /var/log/btmp
-      failed_when: false
-
-    - name: Remove machine-id if present
-      file:
-        path: /etc/machine-id
-        state: absent
-      failed_when: false
-
-    # -------------------------
-    # Final shutdown for templating
-    # -------------------------
-    - name: Cleanly shutdown container for templating
-      command: /sbin/shutdown -h now
-      async: 10
-      poll: 0
-      changed_when: true
-      failed_when: false
