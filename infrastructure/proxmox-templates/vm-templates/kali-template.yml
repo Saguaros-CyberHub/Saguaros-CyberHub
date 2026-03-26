@@ -99,6 +99,7 @@
         regexp: '^PasswordAuthentication\s+yes'
         line: 'PasswordAuthentication no'
         backup: yes
+        create: yes
       tags: always
       ignore_errors: yes
 
@@ -119,6 +120,7 @@
         path: /etc/apt/apt.conf.d/20auto-upgrades
         regexp: '^{{ item.regexp }}'
         line: '{{ item.line }}'
+        create: yes
         state: present
       loop:
         - { regexp: 'APT::Periodic::Update-Package-Lists', line: 'APT::Periodic::Update-Package-Lists "1";' }
@@ -202,6 +204,7 @@
         path: "{{ item.path }}"
         state: absent
       loop: "{{ ssh_keys.files }}"
+      become: true
       tags: always
 
     - name: Remove root authorized_keys # optional - safer for generic template
@@ -233,6 +236,7 @@
         src: /etc/machine-id
         dest: /var/lib/dbus/machine-id
         state: link
+        force: yes
       tags: always
       ignore_errors: yes
 
@@ -251,9 +255,22 @@
       ansible.builtin.command: cloud-init clean --logs --seed
       tags: always
 
+    - name: Remove Zsh command history # deletes command history (created user)
+      ansible.builtin.file:
+        path: "/home/kali/.zsh_history"
+        state: absent
+
+    - name: Remove kali user authorized_keys # optional - safer for generic template (created user)
+      ansible.builtin.file:
+        path: /home/kali/.ssh/authorized_keys
+        state: absent
+      tags: always
+      ignore_errors: yes
+
     # ----- Shutdown the system (so you can convert to template in Proxmox) -----
     - name: Shutdown the system
       ansible.builtin.command: poweroff
       async: 1
       poll: 0
+      ignore_errors: true
       tags: always
