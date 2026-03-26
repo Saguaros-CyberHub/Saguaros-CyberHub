@@ -412,6 +412,10 @@
 
           # Allow clients to ping the gateway
           -A INPUT -i {{ lan_if }} -p icmp --icmp-type echo-request -j ACCEPT
+          # Allow ICMP replies and diagnostics from WAN
+          -A INPUT -i {{ wan_if }} -p icmp --icmp-type echo-reply -j ACCEPT
+          -A INPUT -i {{ wan_if }} -p icmp --icmp-type time-exceeded -j ACCEPT
+          -A INPUT -i {{ wan_if }} -p icmp --icmp-type destination-unreachable -j ACCEPT
 
           # Management SSH access from trusted subnets (WAN-side only)
           {% for mgmt_subnet in mgmt_subnets %}
@@ -419,12 +423,25 @@
           {% endfor %}
 
           # --- FORWARD (traffic routed through the transit gateway) ---
-          # Allow return traffic
+          # Allow return traffic (ESTABLISHED,RELATED from both directions)
           -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-          # Specific forwarded exception(s) that must come before anti-breakout drops
+          # Inbound from VPN: allow SSH to lane gateways
+          -A FORWARD -s 10.0.254.0/24 -d 100.102.0.0/16 -p tcp --dport 22 -m conntrack --ctstate NEW -j ACCEPT
+
+          # Inbound from Guacamole: allow RDP and SSH to lane gateways (for DNAT to internal VMs)
           {% if guac_server_ip %}
-          -A FORWARD -i {{ lan_if }} -d {{ guac_server_ip }} -p tcp --dport 3389 -m conntrack --ctstate NEW -j ACCEPT
+          -A FORWARD -s {{ guac_server_ip }} -d 100.102.0.0/16 -p tcp -m multiport --dports 22,3389 -m conntrack --ctstate NEW -j ACCEPT
+          # Explicit rule: Guacamole RDP to all lanes via DNAT
+          -A FORWARD -s {{ guac_server_ip }} -d 192.18.0.0/24 -p tcp --dport 3389 -j ACCEPT
+          {% endif %}
+
+          # Allow ICMP for diagnostics (ping, traceroute) in both directions
+          -A FORWARD -p icmp -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
+
+          # Outbound from lanes: allow SSH to external Guacamole (for lane->guac direction if needed)
+          {% if guac_server_ip %}
+          -A FORWARD -i {{ lan_if }} -d {{ guac_server_ip }} -p tcp -m multiport --dports 22,3389 -m conntrack --ctstate NEW -j ACCEPT
           {% endif %}
 
           # Anti-breakout: block internal/private/infrastructure destinations first

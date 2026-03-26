@@ -54,6 +54,18 @@
     # Guacamole RDP server (for remote desktop access)
     guac_server_ip: "100.100.70.10"           # e.g., "100.100.70.10" (leave blank to disable RDP forwarding)
 
+    # Port forwarding (DNAT): external port -> internal VM IP:port
+    # Override via -e "port_forwards=[...]" during playbook execution
+    port_forwards:
+      - external_port: 3389
+        internal_ip: "192.18.0.10"
+        internal_port: 3389
+        protocol: tcp
+      - external_port: 22
+        internal_ip: "192.18.0.20"
+        internal_port: 22
+        protocol: tcp
+
     # Allowed outbound traffic from lane to uplink (NEW connections)
     allow_out_tcp_ports: [80, 443, 22]
     allow_out_udp_ports: [123]
@@ -409,27 +421,45 @@
           :FORWARD DROP [0:0]
           :OUTPUT ACCEPT [0:0]
           -A INPUT -i lo -j ACCEPT
+          # Allow inbound from module gateway (transit zone) on WAN interface
+          -A INPUT -i {{ wan_if }} -s {{ transit_zone }} -j ACCEPT
           -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
           -A INPUT -i {{ lan_if }} -p udp --dport 67:68 -j ACCEPT
           -A INPUT -i {{ lan_if }} -p udp --dport 53 -j ACCEPT
           -A INPUT -i {{ lan_if }} -p tcp --dport 53 -j ACCEPT
           -A INPUT -i {{ lan_if }} -p udp --dport 123 -j ACCEPT
           -A INPUT -i {{ lan_if }} -p icmp --icmp-type echo-request -j ACCEPT
+          # Allow ICMP replies and diagnostics from WAN
+          -A INPUT -i {{ wan_if }} -p icmp --icmp-type echo-reply -j ACCEPT
+          -A INPUT -i {{ wan_if }} -p icmp --icmp-type time-exceeded -j ACCEPT
+          -A INPUT -i {{ wan_if }} -p icmp --icmp-type destination-unreachable -j ACCEPT
           {% for mgmt_subnet in mgmt_subnets %}
           -A INPUT -i {{ wan_if }} -s {{ mgmt_subnet }} -p tcp --dport {{ mgmt_ssh_port }} -m conntrack --ctstate NEW -j ACCEPT
           {% endfor %}
           # --- FORWARD (traffic routed through the lane gateway) ---
-          # Allow return traffic
+          # Allow return traffic (ESTABLISHED,RELATED from both directions)
           -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+          # Allow inbound RDP forwarding from transit zone to student lane (RELATED,ESTABLISHED)
+          -A FORWARD -i {{ wan_if }} -o {{ lan_if }} -m state --state RELATED,ESTABLISHED -j ACCEPT
 
-          # Specific forwarded exception(s) that must come before anti-breakout drops
+          # Route to module gateway for DNS/NTP
           {% if module_gateway_ip %}
           -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p udp -m multiport --dports 53,123 -m conntrack --ctstate NEW -j ACCEPT
           -A FORWARD -i {{ lan_if }} -d {{ module_gateway_ip }} -p tcp --dport 53 -m conntrack --ctstate NEW -j ACCEPT
           {% endif %}
+
+          # Port-forwarded inbound traffic (from DNAT translation)
+          {% for pf in port_forwards %}
+          -A FORWARD -i {{ wan_if }} -d {{ pf.internal_ip }} -p {{ pf.protocol }} --dport {{ pf.internal_port }} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+          {% endfor %}
+
+          # Outbound from lanes: allow lane hosts to reach Guacamole
           {% if guac_server_ip %}
-          -A FORWARD -i {{ lan_if }} -d {{ guac_server_ip }} -p tcp --dport 3389 -m conntrack --ctstate NEW -j ACCEPT
+          -A FORWARD -i {{ lan_if }} -d {{ guac_server_ip }} -p tcp -m multiport --dports 22,3389 -m conntrack --ctstate NEW -j ACCEPT
           {% endif %}
+
+          # Allow ICMP for diagnostics (ping, traceroute) in both directions
+          -A FORWARD -p icmp -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
 
           # Anti-breakout: block internal/private/infrastructure destinations first
           {% for cidr in blocked_cidrs %}
@@ -480,7 +510,12 @@
           :INPUT ACCEPT [0:0]
           :OUTPUT ACCEPT [0:0]
           :POSTROUTING ACCEPT [0:0]
-          -A POSTROUTING -s {{ lan_net }} -o {{ wan_if }} -j MASQUERADE
+          # Port forwarding (DNAT): external port -> internal VM
+          {% for pf in port_forwards %}
+          -A PREROUTING -i {{ wan_if }} -p {{ pf.protocol }} --dport {{ pf.external_port }} -j DNAT --to-destination {{ pf.internal_ip }}:{{ pf.internal_port }}
+          {% endfor %}
+          # SNAT: rewrite outbound to appear from gateway
+          -A POSTROUTING -o {{ wan_if }} -s {{ lan_net }} -j MASQUERADE
           COMMIT
           *mangle
           :PREROUTING ACCEPT [0:0]
