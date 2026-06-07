@@ -16,6 +16,7 @@ tempCodeRunnerFile.sh
 .cybercore-backup/
 **/template-inventory.ini
 data/
+.venv/
 
 # Added for install.sh
 /secrets/
