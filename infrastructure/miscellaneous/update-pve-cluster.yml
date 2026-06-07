@@ -1,0 +1,118 @@
+---
+- name: Update Proxmox VE Cluster Safely with Ceph
+  hosts: nodes
+  become: true
+  serial: 1
+  gather_facts: true
+
+  vars:
+    # Pick a stable node that has ceph admin access.
+    # You can also hardcode this, e.g. ceph_admin_host: "pve01"
+    ceph_admin_host: "{{ groups['nodes'][0] }}"
+
+    # Set to true if you use Proxmox HA and want HA services moved away
+    use_pve_ha_maintenance: false
+
+  pre_tasks:
+    - name: Check Ceph health before touching this node
+      command: ceph health
+      register: ceph_health_before
+      changed_when: false
+      delegate_to: "{{ ceph_admin_host }}"
+      run_once: false
+
+    - name: Stop if Ceph is not healthy before maintenance
+      fail:
+        msg: "Ceph is not HEALTH_OK before updating {{ inventory_hostname }}: {{ ceph_health_before.stdout }}"
+      when: ceph_health_before.stdout != "HEALTH_OK"
+
+    - name: Check Proxmox cluster status
+      command: pvecm status
+      register: pvecm_status
+      changed_when: false
+
+  tasks:
+    - name: Update package lists
+      apt:
+        update_cache: yes
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: dist
+
+    - name: Check if reboot is required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Ceph-safe reboot block
+      when: reboot_required.stat.exists
+      block:
+        - name: Put Proxmox HA node into maintenance mode
+          command: "ha-manager crm-command node-maintenance enable {{ inventory_hostname }}"
+          delegate_to: "{{ ceph_admin_host }}"
+          changed_when: true
+          when: use_pve_ha_maintenance | bool
+
+        - name: Set Ceph noout before reboot
+          command: ceph osd set noout
+          delegate_to: "{{ ceph_admin_host }}"
+          changed_when: true
+
+        - name: Reboot node
+          reboot:
+            reboot_timeout: 900
+            post_reboot_delay: 30
+
+        - name: Wait for SSH to return
+          wait_for_connection:
+            delay: 10
+            timeout: 300
+
+        - name: Wait for Proxmox API to return
+          wait_for:
+            host: "{{ ansible_host | default(inventory_hostname) }}"
+            port: 8006
+            delay: 10
+            timeout: 300
+
+        - name: Wait for Ceph to see the node's OSDs recover
+          command: ceph -s
+          register: ceph_status_after_reboot
+          changed_when: false
+          delegate_to: "{{ ceph_admin_host }}"
+          retries: 60
+          delay: 10
+          until:
+            - "'active+clean' in ceph_status_after_reboot.stdout"
+            - "'degraded' not in ceph_status_after_reboot.stdout"
+            - "'undersized' not in ceph_status_after_reboot.stdout"
+            - "'peering' not in ceph_status_after_reboot.stdout"
+            - "'recovering' not in ceph_status_after_reboot.stdout"
+
+      always:
+        - name: Unset Ceph noout after maintenance
+          command: ceph osd unset noout
+          delegate_to: "{{ ceph_admin_host }}"
+          changed_when: true
+          when: reboot_required.stat.exists
+
+        - name: Disable Proxmox HA node maintenance mode
+          command: "ha-manager crm-command node-maintenance disable {{ inventory_hostname }}"
+          delegate_to: "{{ ceph_admin_host }}"
+          changed_when: true
+          when:
+            - reboot_required.stat.exists
+            - use_pve_ha_maintenance | bool
+
+        - name: Show Ceph health detail after maintenance
+          command: ceph health detail
+          register: ceph_health_detail_after
+          changed_when: false
+          delegate_to: "{{ ceph_admin_host }}"
+          when: reboot_required.stat.exists
+
+        - name: Display post-maintenance Ceph health detail
+          debug:
+            var: ceph_health_detail_after.stdout_lines
+          when: reboot_required.stat.exists
